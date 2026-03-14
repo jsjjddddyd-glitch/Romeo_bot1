@@ -5,11 +5,16 @@ import re
 import asyncio
 import aiohttp
 from aiohttp import web
+from datetime import datetime
 
 TOKEN = '8785959754:AAFWbDWNkBeT42CzqNn_m1g7eqGFp6XdBps'
 API = f'https://api.telegram.org/bot{TOKEN}'
 DATA_FILE = './data.json'
 STATE_FILE = './state.json'
+
+# SightEngine API - مزود الكشف عن المحتوى المخل
+SIGHTENGINE_API_USER = '130043340'
+SIGHTENGINE_API_SECRET = 'RFozDT5M3VYmccC2rcArKqnMPWPCKJfE'
 
 # ===========================
 # DATA HELPERS
@@ -46,8 +51,11 @@ def get_settings(data, chat_id):
             'lock_videos': False, 'lock_media_edit': False, 'lock_audio': False, 'lock_music': False,
             'lock_repeat': False, 'lock_mention': False, 'lock_numbers': False, 'lock_stickers': False,
             'lock_animated': False, 'lock_chat': False, 'lock_join': False,
-            'disable_id': False, 'disable_service': False, 'disable_fun': False, 'disable_welcome': False, 'disable_link': False
+            'disable_id': False, 'disable_service': False, 'disable_fun': False, 'disable_welcome': False, 'disable_link': False,
+            'lock_nsfw': False
         }
+    if 'lock_nsfw' not in data['group_settings'][id_]:
+        data['group_settings'][id_]['lock_nsfw'] = False
     return data['group_settings'][id_]
 
 def get_rank(data, chat_id, user_id):
@@ -103,8 +111,14 @@ async def unban(chat_id, user_id):
 async def answer_cb(id_):
     return await api_call('answerCallbackQuery', {'callback_query_id': id_})
 
-async def edit_msg(chat_id, msg_id, text):
-    return await api_call('editMessageText', {'chat_id': chat_id, 'message_id': msg_id, 'text': text, 'parse_mode': 'HTML'})
+async def edit_msg(chat_id, msg_id, text, markup=None):
+    params = {'chat_id': chat_id, 'message_id': msg_id, 'text': text, 'parse_mode': 'HTML'}
+    if markup:
+        params['reply_markup'] = markup
+    return await api_call('editMessageText', params)
+
+async def get_file(file_id):
+    return await api_call('getFile', {'file_id': file_id})
 
 def name(from_):
     n = ((from_.get('first_name') or '') + ' ' + (from_.get('last_name') or '')).strip()
@@ -135,22 +149,170 @@ async def is_master(data, chat_id, user_id):
     return rank_level(get_rank(data, chat_id, user_id)) >= rank_level('مالك أساسي')
 
 # ===========================
+# NSFW IMAGE DETECTION
+# ===========================
+
+async def check_image_nsfw(file_id):
+    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
+        return False, None
+    try:
+        file_info = await get_file(file_id)
+        if not file_info:
+            return False, None
+        file_path = file_info.get('file_path')
+        if not file_path:
+            return False, None
+        file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
+        async with aiohttp.ClientSession() as session:
+            params = {
+                'url': file_url,
+                'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,face-attributes',
+                'api_user': SIGHTENGINE_API_USER,
+                'api_secret': SIGHTENGINE_API_SECRET
+            }
+            async with session.get('https://api.sightengine.com/1.0/check.json', params=params) as res:
+                if res.status != 200:
+                    return False, None
+                result = await res.json()
+                if result.get('status') != 'success':
+                    return False, None
+                nudity = result.get('nudity', {})
+                if nudity.get('sexual_activity', 0) > 0.5 or nudity.get('sexual_display', 0) > 0.5 or nudity.get('erotica', 0) > 0.6:
+                    return True, 'إباحي'
+                weapon = result.get('weapon', {})
+                if weapon.get('classes', {}).get('firearm', 0) > 0.7 or weapon.get('classes', {}).get('knife', 0) > 0.8:
+                    return True, 'أسلحة'
+                drug = result.get('recreational_drug', {})
+                if drug.get('prob', 0) > 0.7:
+                    return True, 'مواد ممنوعة'
+                face = result.get('faces', [])
+                for f in face:
+                    age_info = f.get('attributes', {}).get('age', {})
+                    avg_age = (age_info.get('min', 20) + age_info.get('max', 20)) / 2
+                    nudity_raw = result.get('nudity', {})
+                    if avg_age < 18 and (nudity_raw.get('suggestive', 0) > 0.5 or nudity_raw.get('sexual_display', 0) > 0.3):
+                        return True, 'محتوى يخص قاصرين'
+                classes_text = result.get('text', {}).get('classes', {})
+                if classes_text.get('gov_id', 0) > 0.6 or classes_text.get('personal', 0) > 0.7:
+                    return True, 'وثائق رسمية/هوية'
+                return False, None
+    except Exception as e:
+        print(f'NSFW check error: {e}')
+        return False, None
+
+# ===========================
+# USER INFO - ACCOUNT CREATION
+# ===========================
+
+def format_account_date(user_id):
+    try:
+        uid = int(user_id)
+        if uid < 100000:        year, month = 2013, 3
+        elif uid < 1000000:     year, month = 2013, 8
+        elif uid < 10000000:    year, month = 2014, 6
+        elif uid < 50000000:    year, month = 2015, 6
+        elif uid < 100000000:   year, month = 2016, 4
+        elif uid < 200000000:   year, month = 2017, 3
+        elif uid < 300000000:   year, month = 2017, 10
+        elif uid < 400000000:   year, month = 2018, 5
+        elif uid < 500000000:   year, month = 2019, 1
+        elif uid < 600000000:   year, month = 2019, 8
+        elif uid < 700000000:   year, month = 2020, 3
+        elif uid < 800000000:   year, month = 2020, 9
+        elif uid < 900000000:   year, month = 2021, 3
+        elif uid < 1000000000:  year, month = 2021, 8
+        elif uid < 1100000000:  year, month = 2022, 1
+        elif uid < 1200000000:  year, month = 2022, 5
+        elif uid < 1300000000:  year, month = 2022, 9
+        elif uid < 1400000000:  year, month = 2023, 1
+        elif uid < 1500000000:  year, month = 2023, 5
+        elif uid < 1600000000:  year, month = 2023, 9
+        elif uid < 1700000000:  year, month = 2024, 1
+        elif uid < 1800000000:  year, month = 2024, 5
+        else:                   year, month = 2024, 9
+        return f'{year}-{month:02d}'
+    except:
+        return 'غير معروف'
+
+ARABIC_MONTHS = {
+    1: 'يناير', 2: 'فبراير', 3: 'مارس', 4: 'أبريل',
+    5: 'مايو', 6: 'يونيو', 7: 'يوليو', 8: 'أغسطس',
+    9: 'سبتمبر', 10: 'أكتوبر', 11: 'نوفمبر', 12: 'ديسمبر'
+}
+
+def get_account_creation_text(from_):
+    date_str = format_account_date(from_['id'])
+    try:
+        parts = date_str.split('-')
+        month_name = ARABIC_MONTHS.get(int(parts[1]), parts[1])
+        return f'📅 تقريباً: {month_name} {parts[0]}'
+    except:
+        return f'📅 {date_str}'
+
+# ===========================
 # CALLBACKS
 # ===========================
 
 menu_texts = {
-    'menu_service': '🔧 <b>أوامر الخدمية:</b>\n\n• <b>بايو</b> - يرسل بايو كاتب الكلمة\n• <b>اسمي</b> - يرسل اسمك\n• <b>اسمه</b> (رد) - اسم الشخص\n• <b>يوزري</b> - يرسل يوزرك\n• <b>يوزره</b> (رد) - يوزر الشخص\n• <b>المالك</b> - يذكر مالك المجموعة\n• <b>ايدي</b> - معرفك\n• <b>الرابط</b> - رابط المجموعة\n• <b>رتبة / رتبته</b> - رتبتك أو رتبة الشخص\n\n🔴 تعطيل الخدمية | تفعيل الخدمية',
+    'menu_service': '🔧 <b>أوامر الخدمية:</b>\n\n• <b>بايو</b> - يرسل بايو كاتب الكلمة\n• <b>اسمي</b> - يرسل اسمك\n• <b>اسمه</b> (رد) - اسم الشخص\n• <b>يوزري</b> - يرسل يوزرك\n• <b>يوزره</b> (رد) - يوزر الشخص\n• <b>المالك</b> - يذكر مالك المجموعة\n• <b>ايدي</b> - معرفك\n• <b>الرابط</b> - رابط المجموعة\n• <b>رتبة / رتب</b> - رتبتك\n• <b>انشاء</b> - تاريخ انشاء حسابك\n• <b>انشاء</b> (رد) - تاريخ انشاء حساب الشخص',
     'menu_fun': '🎉 <b>أوامر التسليه:</b>\n\n• <b>رفع [كلمة]</b> (رد) - يرفع لقب للشخص\n\n🔴 تعطيل التسليه | تفعيل التسليه',
-    'menu_locks': '🔒 <b>أوامر القفل والفتح:</b>\n\nقفل السب | قفل التكرار | قفل الروابط\nقفل التوجيه | قفل الكلايش | قفل الانجليزية\nقفل الصينية | قفل الروسية | قفل الصور\nقفل الفيديوهات | قفل تعديل الميديا\nقفل الصوتيات | قفل الاغاني | قفل التحويل\nقفل الدخول | قفل التاك | قفل الارقام\nقفل الملصقات | قفل المتحركة | قفل الشات\n\n(استبدل قفل بـ فتح للفتح)\n\n🔴 تعطيل الايدي | تعطيل الترحيب | تعطيل الرابط',
+    'menu_locks': '🔒 <b>أوامر القفل والفتح:</b>\n\nقفل السب | قفل التكرار | قفل الروابط\nقفل التوجيه | قفل الكلايش | قفل الانجليزية\nقفل الصينية | قفل الروسية | قفل الصور\nقفل الفيديوهات | قفل تعديل الميديا\nقفل الصوتيات | قفل الاغاني | قفل التحويل\nقفل الدخول | قفل التاك | قفل الارقام\nقفل الملصقات | قفل المتحركة | قفل الشات\n\n🛡️ قفل المحتوى المخل | فتح المحتوى المخل',
     'menu_settings': '⚙️ <b>أوامر الإعدادات (رد على رسالة شخص):</b>\n\n• رفع مالك أساسي / تنزيل مالك أساسي\n• رفع مالك / تنزيل مالك\n• رفع مدير / تنزيل مدير\n• رفع ادمن / تنزيل ادمن\n• رفع مميز / تنزيل مميز\n\n🔴 كتم | تقييد | طرد | رفع القيود | مسح'
 }
 
 async def handle_callback(cb):
     chat_id = cb['message']['chat']['id']
     msg_id = cb['message']['message_id']
+    user_id = cb['from']['id']
+    data_cb = cb['data']
     await answer_cb(cb['id'])
-    if cb['data'] in menu_texts:
-        await edit_msg(chat_id, msg_id, menu_texts[cb['data']])
+
+    if data_cb in menu_texts:
+        await edit_msg(chat_id, msg_id, menu_texts[data_cb])
+        return
+
+    if data_cb.startswith('promote_in_group:'):
+        group_id = int(data_cb.split(':')[1])
+        await api_call('promoteChatMember', {
+            'chat_id': group_id, 'user_id': user_id,
+            'can_manage_chat': True, 'can_change_info': True,
+            'can_delete_messages': True, 'can_invite_users': True,
+            'can_restrict_members': True, 'can_pin_messages': True,
+            'can_manage_video_chats': True
+        })
+        await edit_msg(chat_id, msg_id, '✅ تم رفعك كمشرف في المجموعة بنجاح!')
+        return
+
+    if data_cb.startswith('select_group:'):
+        group_id = int(data_cb.split(':')[1])
+        group_info = await get_chat(group_id)
+        group_name = (group_info or {}).get('title', 'المجموعة')
+        keyboard = {'inline_keyboard': [[{'text': '👑 رفعني مشرف', 'callback_data': f'promote_in_group:{group_id}'}]]}
+        await edit_msg(chat_id, msg_id, f'📌 المجموعة: <b>{group_name}</b>\n\nاختر ما تريد:', keyboard)
+        return
+
+    if data_cb == 'show_my_groups':
+        groups_data = load_data()
+        all_group_settings = groups_data.get('group_settings', {})
+        if not all_group_settings:
+            await edit_msg(chat_id, msg_id, '😕 لا توجد مجموعات مسجلة في البوت حتى الآن.\n\nأضف البوت لمجموعتك أولاً كمشرف.')
+            return
+        buttons = []
+        for gid in all_group_settings:
+            try:
+                ginfo = await get_chat(int(gid))
+                if ginfo and ginfo.get('title'):
+                    member = await get_chat_member(int(gid), user_id)
+                    if member and member.get('status') in ['creator', 'administrator', 'member', 'restricted']:
+                        buttons.append([{'text': ginfo['title'], 'callback_data': f'select_group:{gid}'}])
+            except:
+                continue
+        if not buttons:
+            await edit_msg(chat_id, msg_id, '😕 لا توجد مجموعات متاحة لك.')
+            return
+        keyboard = {'inline_keyboard': buttons}
+        await edit_msg(chat_id, msg_id, '📋 <b>مجموعاتك:</b>\n\nاختر المجموعة:', keyboard)
+        return
 
 # ===========================
 # MESSAGE HANDLER
@@ -166,10 +328,24 @@ async def handle_update(update):
         return
 
     chat_id = msg['chat']['id']
-    from_ = msg['from']
-    user_id = from_['id']
+    chat_type = msg['chat'].get('type', 'private')
+    from_ = msg.get('from', {})
+    user_id = from_.get('id')
     text = (msg.get('text') or msg.get('caption') or '').strip()
     msg_id = msg['message_id']
+
+    if 'new_chat_members' in msg:
+        bot_info = await api_call('getMe', {})
+        bot_id = (bot_info or {}).get('id')
+        for m in msg['new_chat_members']:
+            if bot_id and m['id'] == bot_id:
+                await send(chat_id, '✅ تم تفعيل المجموعة بنجاح 🌹\nأنا بوت روميو جاهز لخدمة المجموعة!')
+                return
+
+    if chat_type == 'private':
+        if text and text.startswith('/start'):
+            await handle_start(msg)
+        return
 
     data = load_data()
     state = load_state()
@@ -215,6 +391,35 @@ async def handle_update(update):
     save_state(state)
 
 # ===========================
+# BOT ADDED AS ADMIN HANDLER
+# ===========================
+
+async def handle_my_chat_member(update):
+    new_status = update.get('new_chat_member', {}).get('status')
+    chat = update.get('chat', {})
+    chat_type = chat.get('type', '')
+    chat_id = chat.get('id')
+    if new_status == 'administrator' and chat_type in ['group', 'supergroup']:
+        await send(chat_id, '✅ تم تفعيل المجموعة بنجاح 🌹\nأنا بوت روميو جاهز لإدارة المجموعة!')
+
+# ===========================
+# START COMMAND - PRIVATE ONLY
+# ===========================
+
+async def handle_start(msg):
+    chat_id = msg['chat']['id']
+    from_ = msg['from']
+    user_name = name(from_)
+    keyboard = {'inline_keyboard': [[{'text': '📋 مجموعاتي', 'callback_data': 'show_my_groups'}]]}
+    text = (
+        f'👋 أهلاً عزيزي <b>{user_name}</b>\n\n'
+        f'🌹 أنا بوت <b>روميو</b>\n\n'
+        f'يمكنك إضافتي لأي مجموعة كمشرف لإدارتها\n\n'
+        f'💡 اضغط الزر أدناه لاختيار مجموعة وإدارتها'
+    )
+    await send(chat_id, text, {'reply_markup': keyboard})
+
+# ===========================
 # MEDIA MODERATION
 # ===========================
 
@@ -232,10 +437,26 @@ async def media_mod(msg, data, settings):
         await delete(chat_id, msg_id)
         await send(chat_id, f'⚠️ {m}\nممنوع التوجيه والتحويل هنا')
         return
-    if msg.get('photo') and settings['lock_photos']:
-        await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ عذرا عزيزي {m}\nممنوع ارسال الصور هنا')
-        return
+
+    if msg.get('photo'):
+        photo_list = msg['photo']
+        file_id = photo_list[-1]['file_id']
+        if settings.get('lock_nsfw', False):
+            is_violation, violation_type = await check_image_nsfw(file_id)
+            if is_violation:
+                await delete(chat_id, msg_id)
+                await send(chat_id, (
+                    f'🚫 <b>تم حذف صورة مخالفة</b>\n\n'
+                    f'👤 المرسل: {m}\n'
+                    f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
+                    f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
+                ))
+                return
+        if settings['lock_photos']:
+            await delete(chat_id, msg_id)
+            await send(chat_id, f'⚠️ عذرا عزيزي {m}\nممنوع ارسال الصور هنا')
+            return
+
     if msg.get('video') and settings['lock_videos']:
         await delete(chat_id, msg_id)
         await send(chat_id, f'⚠️ عذرا عزيزي {m}\nممنوع ارسال الفيديوهات هنا')
@@ -328,19 +549,16 @@ async def process_cmd(msg, data, state, text, settings):
     reply = {'reply_to_message_id': msg_id}
 
     if re.match(r'^بوت', text) or text == 'بوت':
-        r = ['وش تبي 😒', 'اهلا 👋', 'شكد مزعج 😤', 'عندي اسم ترا 🌹']
-        await send(chat_id, random.choice(r), reply)
+        await send(chat_id, random.choice(['وش تبي 😒', 'اهلا 👋', 'شكد مزعج 😤', 'عندي اسم ترا 🌹']), reply)
         return
     if re.match(r'^روميو', text) or text == 'روميو':
-        r = ['قول وش تبي 😊', 'هلا 👋', 'تفضل 🌹', 'لا تلح 😑']
-        await send(chat_id, random.choice(r), reply)
+        await send(chat_id, random.choice(['قول وش تبي 😊', 'هلا 👋', 'تفضل 🌹', 'لا تلح 😑']), reply)
         return
     if 'صباح الخير' in text:
         await send(chat_id, '☀️ صباح النور', reply)
         return
     if 'سلام عليكم' in text or 'السلام عليكم' in text:
-        r = ['وعليكم السلام والرحمة 🌹', 'وعليكم السلام 👋', 'وعليكم السلام ورحمة الله وبركاته 🤲']
-        await send(chat_id, random.choice(r), reply)
+        await send(chat_id, random.choice(['وعليكم السلام والرحمة 🌹', 'وعليكم السلام 👋', 'وعليكم السلام ورحمة الله وبركاته 🤲']), reply)
         return
 
     if not settings['disable_service']:
@@ -386,8 +604,7 @@ async def process_cmd(msg, data, state, text, settings):
                 owner = next((a for a in admins if a.get('status') == 'creator'), None)
                 if owner:
                     of = owner['user']
-                    bio = of.get('bio', 'لا يوجد بايو')
-                    await send(chat_id, f'👑 مالك المجموعة: {mention(of)}\n📋 البايو: {bio}')
+                    await send(chat_id, f'👑 مالك المجموعة: {mention(of)}\n📋 البايو: {of.get("bio", "لا يوجد بايو")}')
                     return
             await send(chat_id, '⚠️ لم أجد مالك المجموعة', reply)
             return
@@ -406,6 +623,15 @@ async def process_cmd(msg, data, state, text, settings):
                 await send(chat_id, f'🏅 رتبة {name(tf)}: <b>{rank}</b>', reply)
             else:
                 await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة رتبته', reply)
+            return
+        if text == 'انشاء':
+            if msg.get('reply_to_message'):
+                tf = msg['reply_to_message']['from']
+                creation = get_account_creation_text(tf)
+                await send(chat_id, f'🗓️ تاريخ إنشاء حساب {mention(tf)}:\n{creation}', reply)
+            else:
+                creation = get_account_creation_text(from_)
+                await send(chat_id, f'🗓️ تاريخ إنشاء حسابك:\n{creation}', reply)
             return
 
     if not settings['disable_fun'] and await is_admin_up(data, chat_id, user_id):
@@ -426,14 +652,12 @@ async def process_cmd(msg, data, state, text, settings):
         return
 
     if text == 'اضف رد' and await is_admin_up(data, chat_id, user_id):
-        if cid not in state:
-            state[cid] = {}
+        if cid not in state: state[cid] = {}
         state[cid][str(user_id)] = {'step': 'await_name'}
         await send(chat_id, '📝 أرسل اسم الرد:', reply)
         return
     if text == 'مسح رد' and await is_admin_up(data, chat_id, user_id):
-        if cid not in state:
-            state[cid] = {}
+        if cid not in state: state[cid] = {}
         state[cid][str(user_id)] = {'step': 'await_delete_name'}
         await send(chat_id, '🗑️ أرسل اسم الرد الذي تريد حذفه:', reply)
         return
@@ -451,19 +675,31 @@ async def process_cmd(msg, data, state, text, settings):
 
     if await is_admin_up(data, chat_id, user_id):
         lock_map = {
-            'قفل السب': 'lock_swear', 'فتح السب': 'lock_swear', 'قفل التكرار': 'lock_repeat', 'فتح التكرار': 'lock_repeat',
-            'قفل الروابط': 'lock_links', 'فتح الروابط': 'lock_links', 'قفل التوجيه': 'lock_forward', 'فتح التوجيه': 'lock_forward',
-            'قفل التحويل': 'lock_forward', 'فتح التحويل': 'lock_forward', 'قفل الكلايش': 'lock_clutter', 'فتح الكلايش': 'lock_clutter',
-            'قفل الانجليزيه': 'lock_english', 'فتح الانجليزيه': 'lock_english', 'قفل الانجليزية': 'lock_english', 'فتح الانجليزية': 'lock_english',
-            'قفل الصينيه': 'lock_chinese', 'فتح الصينيه': 'lock_chinese', 'قفل الصينية': 'lock_chinese', 'فتح الصينية': 'lock_chinese',
-            'قفل الروسيه': 'lock_russian', 'فتح الروسيه': 'lock_russian', 'قفل الروسية': 'lock_russian', 'فتح الروسية': 'lock_russian',
-            'قفل الصور': 'lock_photos', 'فتح الصور': 'lock_photos', 'قفل الفيديوهات': 'lock_videos', 'فتح الفيديوهات': 'lock_videos',
+            'قفل السب': 'lock_swear', 'فتح السب': 'lock_swear',
+            'قفل التكرار': 'lock_repeat', 'فتح التكرار': 'lock_repeat',
+            'قفل الروابط': 'lock_links', 'فتح الروابط': 'lock_links',
+            'قفل التوجيه': 'lock_forward', 'فتح التوجيه': 'lock_forward',
+            'قفل التحويل': 'lock_forward', 'فتح التحويل': 'lock_forward',
+            'قفل الكلايش': 'lock_clutter', 'فتح الكلايش': 'lock_clutter',
+            'قفل الانجليزيه': 'lock_english', 'فتح الانجليزيه': 'lock_english',
+            'قفل الانجليزية': 'lock_english', 'فتح الانجليزية': 'lock_english',
+            'قفل الصينيه': 'lock_chinese', 'فتح الصينيه': 'lock_chinese',
+            'قفل الصينية': 'lock_chinese', 'فتح الصينية': 'lock_chinese',
+            'قفل الروسيه': 'lock_russian', 'فتح الروسيه': 'lock_russian',
+            'قفل الروسية': 'lock_russian', 'فتح الروسية': 'lock_russian',
+            'قفل الصور': 'lock_photos', 'فتح الصور': 'lock_photos',
+            'قفل الفيديوهات': 'lock_videos', 'فتح الفيديوهات': 'lock_videos',
             'قفل تعديل الميديا': 'lock_media_edit', 'فتح تعديل الميديا': 'lock_media_edit',
-            'قفل الصوتيات': 'lock_audio', 'فتح الصوتيات': 'lock_audio', 'قفل الاغاني': 'lock_music', 'فتح الاغاني': 'lock_music',
-            'قفل الدخول': 'lock_join', 'فتح الدخول': 'lock_join', 'قفل التاك': 'lock_mention', 'فتح التاك': 'lock_mention',
-            'قفل الارقام': 'lock_numbers', 'فتح الارقام': 'lock_numbers', 'قفل الملصقات': 'lock_stickers', 'فتح الملصقات': 'lock_stickers',
-            'قفل المتحركه': 'lock_animated', 'فتح المتحركه': 'lock_animated', 'قفل المتحركة': 'lock_animated', 'فتح المتحركة': 'lock_animated',
-            'قفل الشات': 'lock_chat', 'فتح الشات': 'lock_chat'
+            'قفل الصوتيات': 'lock_audio', 'فتح الصوتيات': 'lock_audio',
+            'قفل الاغاني': 'lock_music', 'فتح الاغاني': 'lock_music',
+            'قفل الدخول': 'lock_join', 'فتح الدخول': 'lock_join',
+            'قفل التاك': 'lock_mention', 'فتح التاك': 'lock_mention',
+            'قفل الارقام': 'lock_numbers', 'فتح الارقام': 'lock_numbers',
+            'قفل الملصقات': 'lock_stickers', 'فتح الملصقات': 'lock_stickers',
+            'قفل المتحركه': 'lock_animated', 'فتح المتحركه': 'lock_animated',
+            'قفل المتحركة': 'lock_animated', 'فتح المتحركة': 'lock_animated',
+            'قفل الشات': 'lock_chat', 'فتح الشات': 'lock_chat',
+            'قفل المحتوى المخل': 'lock_nsfw', 'فتح المحتوى المخل': 'lock_nsfw'
         }
         if text in lock_map:
             is_lock = text.startswith('قفل')
@@ -582,8 +818,7 @@ async def handle_state(msg, data, state, user_state, text):
         if cid not in data['custom_replies']:
             data['custom_replies'][cid] = {}
         if msg.get('photo'):
-            photos = msg['photo']
-            fid = photos[-1]['file_id']
+            fid = msg['photo'][-1]['file_id']
             data['custom_replies'][cid][n] = {'type': 'photo', 'file_id': fid, 'caption': msg.get('caption', '')}
         elif msg.get('video'):
             data['custom_replies'][cid][n] = {'type': 'video', 'file_id': msg['video']['file_id'], 'caption': msg.get('caption', '')}
@@ -616,9 +851,12 @@ async def webhook_handler(request):
     if request.method == 'POST' and request.path == '/webhook':
         try:
             body = await request.json()
-            await handle_update(body)
+            if 'my_chat_member' in body:
+                await handle_my_chat_member(body['my_chat_member'])
+            else:
+                await handle_update(body)
         except Exception as e:
-            print(e)
+            print(f'Webhook error: {e}')
         return web.Response(text='OK', status=200)
     return web.Response(text='Romeo Bot is running 🌹', status=200)
 
