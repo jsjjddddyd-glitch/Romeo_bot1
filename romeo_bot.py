@@ -3,6 +3,7 @@ import json
 import os
 import re
 import asyncio
+import random
 import aiohttp
 from aiohttp import web
 from datetime import datetime
@@ -15,10 +16,19 @@ STATE_FILE = './state.json'
 SIGHTENGINE_API_USER = '130043340'
 SIGHTENGINE_API_SECRET = 'RFozDT5M3VYmccC2rcArKqnMPWPCKJfE'
 
-# In-memory clean queue per chat
-# {chat_id: {'photos': [msg_id,...], 'videos': [...], 'stickers': [...], 'numbers': [...], 'clutter': [...], 'edited': [...]}}
+_session = None
+
+async def get_session():
+    global _session
+    if _session is None or _session.closed:
+        connector = aiohttp.TCPConnector(limit=100, ttl_dns_cache=300)
+        _session = aiohttp.ClientSession(connector=connector)
+    return _session
+
 clean_queue = {}
 last_clean_time = {}
+
+private_states = {}
 
 # ===========================
 # DATA HELPERS
@@ -29,7 +39,11 @@ def load_data():
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except:
-        return {'custom_replies': {}, 'group_settings': {}, 'user_ranks': {}, 'user_warnings': {}}
+        return {
+            'custom_replies': {}, 'group_settings': {},
+            'user_ranks': {}, 'user_warnings': {},
+            'bank_accounts': {}, 'games_state': {}
+        }
 
 def save_data(d):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
@@ -59,6 +73,7 @@ def get_settings(data, chat_id):
         'lock_animated': False, 'lock_chat': False, 'lock_join': False,
         'disable_id': False, 'disable_service': False, 'disable_fun': False,
         'disable_welcome': False, 'disable_link': False, 'disable_auto_replies': False,
+        'disable_games': False,
         'lock_nsfw': False,
         'lock_nsfw_restrict': False,
         'lock_nsfw_warn': False,
@@ -116,15 +131,102 @@ def rank_level(r):
     return RANKS.get(r, 0)
 
 # ===========================
+# GAME HELPERS
+# ===========================
+
+BANKS = ['بنك الاهلي', 'بنك الرافدين', 'بنك الراجحي']
+
+JOBS = {
+    'نجار': (1000, 2200),
+    'حداد': (1200, 2500),
+    'طيار': (3500, 6000),
+    'حلاق': (800, 1800),
+    'جايجي': (700, 1500),
+    'شرطي': (2000, 4000),
+    'موظف': (1500, 3000),
+}
+
+ITEM_PRICES = {
+    'سيارة': 5000, 'سيارات': 5000,
+    'طيارة': 50000, 'طيارات': 50000,
+    'قصر': 100000, 'قصور': 100000,
+    'بيت': 20000, 'بيوت': 20000,
+    'جندي': 3000, 'جنود': 3000,
+    'فيل': 30000, 'فيله': 30000,
+    'برج': 80000, 'ابراج': 80000,
+    'دبابة': 40000, 'دبابات': 40000,
+}
+
+ITEM_EMOJI = {
+    'سيارة': '🚗', 'طيارة': '✈️', 'قصر': '🏰', 'بيت': '🏠',
+    'جندي': '💂', 'فيل': '🐘', 'برج': '🏙️', 'دبابة': '🪖'
+}
+
+ITEM_SINGULAR = {
+    'سيارات': 'سيارة', 'طيارات': 'طيارة', 'قصور': 'قصر',
+    'بيوت': 'بيت', 'جنود': 'جندي', 'فيله': 'فيل',
+    'ابراج': 'برج', 'دبابات': 'دبابة',
+}
+
+def normalize_item(item_name):
+    item_name = item_name.strip()
+    if item_name in ITEM_SINGULAR:
+        return ITEM_SINGULAR[item_name]
+    if item_name in ITEM_PRICES:
+        return item_name
+    return None
+
+def get_bank(data, chat_id, user_id):
+    cid = str(chat_id)
+    uid = str(user_id)
+    if 'bank_accounts' not in data:
+        data['bank_accounts'] = {}
+    if cid not in data['bank_accounts']:
+        data['bank_accounts'][cid] = {}
+    return data['bank_accounts'][cid].get(uid)
+
+def create_bank_account(data, chat_id, user_id, bank_name):
+    cid = str(chat_id)
+    uid = str(user_id)
+    if 'bank_accounts' not in data:
+        data['bank_accounts'] = {}
+    if cid not in data['bank_accounts']:
+        data['bank_accounts'][cid] = {}
+    account_number = str(random.randint(1000000000, 9999999999))
+    data['bank_accounts'][cid][uid] = {
+        'bank': bank_name,
+        'account_number': account_number,
+        'balance': 0,
+        'properties': {'سيارة': 1},
+        'job': None,
+        'last_salary': 0,
+        'last_steal': 0,
+    }
+    return data['bank_accounts'][cid][uid]
+
+def get_game_state(data, chat_id):
+    cid = str(chat_id)
+    if 'games_state' not in data:
+        data['games_state'] = {}
+    if cid not in data['games_state']:
+        data['games_state'][cid] = {}
+    if 'kursi' not in data['games_state'][cid]:
+        data['games_state'][cid]['kursi'] = {
+            'active': False, 'starter_id': None, 'players': [],
+            'chosen_id': None, 'chosen_name': None, 'questions_count': 0
+        }
+    return data['games_state'][cid]['kursi']
+
+# ===========================
 # TELEGRAM API
 # ===========================
 
 async def api_call(method, params):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f'{API}/{method}', json=params) as res:
-                data = await res.json()
-                return data['result'] if data.get('ok') else None
+        session = await get_session()
+        async with session.post(f'{API}/{method}', json=params) as res:
+            data = await res.json()
+            return data['result'] if data.get('ok') else None
     except:
         return None
 
@@ -211,39 +313,39 @@ async def check_image_nsfw(file_id):
         if not file_path:
             return False, None
         file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
-        async with aiohttp.ClientSession() as session:
-            params = {
-                'url': file_url,
-                'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,face-attributes',
-                'api_user': SIGHTENGINE_API_USER,
-                'api_secret': SIGHTENGINE_API_SECRET
-            }
-            async with session.get('https://api.sightengine.com/1.0/check.json', params=params) as res:
-                if res.status != 200:
-                    return False, None
-                result = await res.json()
-                if result.get('status') != 'success':
-                    return False, None
-                nudity = result.get('nudity', {})
-                if nudity.get('sexual_activity', 0) > 0.5 or nudity.get('sexual_display', 0) > 0.5 or nudity.get('erotica', 0) > 0.6:
-                    return True, 'إباحي'
-                weapon = result.get('weapon', {})
-                if weapon.get('classes', {}).get('firearm', 0) > 0.7 or weapon.get('classes', {}).get('knife', 0) > 0.8:
-                    return True, 'أسلحة'
-                drug = result.get('recreational_drug', {})
-                if drug.get('prob', 0) > 0.7:
-                    return True, 'مواد ممنوعة'
-                face = result.get('faces', [])
-                for f in face:
-                    age_info = f.get('attributes', {}).get('age', {})
-                    avg_age = (age_info.get('min', 20) + age_info.get('max', 20)) / 2
-                    nudity_raw = result.get('nudity', {})
-                    if avg_age < 18 and (nudity_raw.get('suggestive', 0) > 0.5 or nudity_raw.get('sexual_display', 0) > 0.3):
-                        return True, 'محتوى يخص قاصرين'
-                classes_text = result.get('text', {}).get('classes', {})
-                if classes_text.get('gov_id', 0) > 0.6 or classes_text.get('personal', 0) > 0.7:
-                    return True, 'وثائق رسمية/هوية'
+        session = await get_session()
+        params = {
+            'url': file_url,
+            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,face-attributes',
+            'api_user': SIGHTENGINE_API_USER,
+            'api_secret': SIGHTENGINE_API_SECRET
+        }
+        async with session.get('https://api.sightengine.com/1.0/check.json', params=params) as res:
+            if res.status != 200:
                 return False, None
+            result = await res.json()
+            if result.get('status') != 'success':
+                return False, None
+            nudity = result.get('nudity', {})
+            if nudity.get('sexual_activity', 0) > 0.5 or nudity.get('sexual_display', 0) > 0.5 or nudity.get('erotica', 0) > 0.6:
+                return True, 'إباحي'
+            weapon = result.get('weapon', {})
+            if weapon.get('classes', {}).get('firearm', 0) > 0.7 or weapon.get('classes', {}).get('knife', 0) > 0.8:
+                return True, 'أسلحة'
+            drug = result.get('recreational_drug', {})
+            if drug.get('prob', 0) > 0.7:
+                return True, 'مواد ممنوعة'
+            face = result.get('faces', [])
+            for f in face:
+                age_info = f.get('attributes', {}).get('age', {})
+                avg_age = (age_info.get('min', 20) + age_info.get('max', 20)) / 2
+                nudity_raw = result.get('nudity', {})
+                if avg_age < 18 and (nudity_raw.get('suggestive', 0) > 0.5 or nudity_raw.get('sexual_display', 0) > 0.3):
+                    return True, 'محتوى يخص قاصرين'
+            classes_text = result.get('text', {}).get('classes', {})
+            if classes_text.get('gov_id', 0) > 0.6 or classes_text.get('personal', 0) > 0.7:
+                return True, 'وثائق رسمية/هوية'
+            return False, None
     except Exception as e:
         print(f'NSFW check error: {e}')
         return False, None
@@ -305,7 +407,6 @@ def build_clean_menu(settings):
     auto = '✓' if settings.get('clean_auto') else '✗'
     numbers_mark = ' ✓' if settings.get('clean_numbers') else ''
     clutter_mark = ' ✓' if settings.get('clean_clutter') else ''
-    edited_mark = ' ✓' if settings.get('clean_edited') else ''
     interval = settings.get('clean_interval', 1)
 
     text = (
@@ -370,7 +471,7 @@ async def run_clean(chat_id, settings):
         lines = '\n'.join(f'  • {k} ← {v}' for k, v in counts.items())
         msg = (
             '🧹 <b>تم تنظيف المجموعة بالتنظيف التلقائي بنجاح</b>\n\n'
-            f'<b>"  الرسائل المحذوفة:</b>\n{lines}\n\n'
+            f'<b>الرسائل المحذوفة:</b>\n{lines}\n\n'
             '─ تعطيل التنظيف التلقائي\n'
             '─ اخفاء رسالة التنظيف'
         )
@@ -410,10 +511,70 @@ async def auto_clean_loop():
 # ===========================
 
 menu_texts = {
-    'menu_service': '🔧 <b>أوامر الخدمية:</b>\n\n• <b>بايو</b> - يرسل بايو كاتب الكلمة\n• <b>اسمي</b> - يرسل اسمك\n• <b>اسمه</b> (رد) - اسم الشخص\n• <b>يوزري</b> - يرسل يوزرك\n• <b>يوزره</b> (رد) - يوزر الشخص\n• <b>المالك</b> - يذكر مالك المجموعة\n• <b>ايدي</b> - معرفك\n• <b>الرابط</b> - رابط المجموعة\n• <b>رتبة / رتب</b> - رتبتك\n• <b>رتبته</b> (رد) - رتبة شخص\n• <b>انشاء</b> - تاريخ إنشاء الحساب',
-    'menu_fun': '🎉 <b>أوامر التسليه:</b>\n\n• <b>رفع [كلمة]</b> (رد) - يرفع لقب للشخص\n\n🔴 تعطيل التسليه | تفعيل التسليه',
-    'menu_locks': '🔒 <b>أوامر القفل والفتح:</b>\n\nقفل السب | قفل التكرار | قفل الروابط\nقفل التوجيه | قفل الكلايش | قفل الانجليزية\nقفل الصينية | قفل الروسية | قفل الصور\nقفل الفيديوهات | قفل تعديل الميديا\nقفل الصوتيات | قفل الاغاني | قفل التحويل\nقفل الدخول | قفل التاك | قفل الارقام\nقفل الملصقات | قفل المتحركة | قفل الشات\nقفل الملفات\nقفل المحتوى المخل | فتح المحتوى المخل\nقفل المحتوى المخل بالتقييد\nقفل المحتوى المخل بالتحذير',
-    'menu_settings': '⚙️ <b>أوامر الإعدادات (رد على رسالة شخص):</b>\n\n• رفع مالك أساسي / تنزيل مالك أساسي\n• رفع مالك / تنزيل مالك\n• رفع مدير / تنزيل مدير\n• رفع ادمن / تنزيل ادمن\n• رفع مميز / تنزيل مميز\n\n🔴 كتم | تقييد | طرد | رفع القيود | مسح'
+    'menu_service': (
+        '🔧 <b>أوامر الخدمية:</b>\n\n'
+        '• <b>بايو</b> - يرسل بايو كاتب الكلمة\n'
+        '• <b>بايو</b> (رد) - بايو الشخص المردود عليه\n'
+        '• <b>افتاري</b> - يرسل صورتك الشخصية\n'
+        '• <b>اسمي</b> - يرسل اسمك\n'
+        '• <b>اسمه</b> (رد) - اسم الشخص\n'
+        '• <b>يوزري</b> - يرسل يوزرك\n'
+        '• <b>يوزره</b> (رد) - يوزر الشخص\n'
+        '• <b>المالك</b> - يذكر مالك المجموعة\n'
+        '• <b>ايدي</b> - معرفك\n'
+        '• <b>الرابط</b> - رابط المجموعة\n'
+        '• <b>رتبة / رتب</b> - رتبتك\n'
+        '• <b>رتبة</b> (رد) - رتبة الشخص المردود عليه\n'
+        '• <b>رتبته</b> (رد) - رتبة شخص\n'
+        '• <b>انشاء</b> - تاريخ إنشاء الحساب'
+    ),
+    'menu_fun': (
+        '🎉 <b>أوامر التسليه:</b>\n\n'
+        '• <b>رفع [كلمة]</b> (رد) - يرفع لقب للشخص للتسلية\n\n'
+        '🔴 تعطيل التسليه | تفعيل التسليه'
+    ),
+    'menu_locks': (
+        '🔒 <b>أوامر القفل والفتح:</b>\n\n'
+        'قفل السب | قفل التكرار | قفل الروابط\n'
+        'قفل التوجيه | قفل الكلايش | قفل الانجليزية\n'
+        'قفل الصينية | قفل الروسية | قفل الصور\n'
+        'قفل الفيديوهات | قفل تعديل الميديا\n'
+        'قفل الصوتيات | قفل الاغاني | قفل التحويل\n'
+        'قفل الدخول | قفل التاك | قفل الارقام\n'
+        'قفل الملصقات | قفل المتحركة | قفل الشات\n'
+        'قفل الملفات\n'
+        'قفل المحتوى المخل | فتح المحتوى المخل\n'
+        'قفل المحتوى المخل بالتقييد\n'
+        'قفل المحتوى المخل بالتحذير'
+    ),
+    'menu_settings': (
+        '⚙️ <b>أوامر الإعدادات (رد على رسالة شخص):</b>\n\n'
+        '• رفع مالك أساسي / تنزيل مالك أساسي\n'
+        '• رفع مالك / تنزيل مالك\n'
+        '• رفع مدير / تنزيل مدير\n'
+        '• رفع ادمن / تنزيل ادمن\n'
+        '• رفع مميز / تنزيل مميز\n\n'
+        '🔴 كتم | تقييد | طرد | رفع القيود | مسح'
+    ),
+    'menu_games': (
+        '🎮 <b>أوامر الألعاب:</b>\n\n'
+        '<b>🪑 لعبة الكرسي:</b>\n'
+        '• اكتب <b>كرسي</b> لبدء اللعبة وتسجيل نفسك\n'
+        '• الأعضاء يرسلون <b>انا</b> للانضمام\n'
+        '• من بدأ اللعبة يرسل <b>نعم</b> لبدء الأسئلة\n'
+        '• من بدأ اللعبة يرسل <b>انهاء</b> لإنهاء اللعبة\n\n'
+        '<b>🏦 لعبة ممتلكاتي:</b>\n'
+        '• <b>انشاء حساب بنكي</b> - فتح حساب بنكي\n'
+        '• <b>حسابي</b> - عرض معلومات حسابك\n'
+        '• <b>فلوسي</b> - عرض رصيدك\n'
+        '• <b>فلوسه</b> (رد) - عرض رصيد شخص آخر\n'
+        '• <b>راتب</b> - استلام راتبك (كل 7 ساعات)\n'
+        '• <b>زرف</b> (رد) - سرقة فلوس من شخص (كل 4 ساعات)\n'
+        '• <b>حظ [مبلغ]</b> - المقامرة بمبلغ\n'
+        '• <b>شراء [عدد] [اسم الشيء]</b> - شراء ممتلكات\n'
+        '• <b>ممتلكاتي</b> - عرض ممتلكاتك\n\n'
+        '🔴 تعطيل الالعاب | تفعيل الالعاب'
+    ),
 }
 
 async def handle_callback(cb):
@@ -427,7 +588,6 @@ async def handle_callback(cb):
         await edit_msg(chat_id, msg_id, menu_texts[data_cb])
         return
 
-    # Clean menu callbacks
     if data_cb in ('clean_toggle_auto', 'clean_toggle_numbers', 'clean_toggle_clutter',
                    'clean_toggle_edited', 'clean_set_time', 'clean_back',
                    'clean_disable_auto', 'clean_hide_report'):
@@ -487,6 +647,54 @@ async def handle_callback(cb):
 
         return
 
+    if data_cb.startswith('bank_create:'):
+        bank_name = data_cb.split(':', 1)[1]
+        data = load_data()
+        existing = get_bank(data, chat_id, user_id)
+        if existing:
+            await edit_msg(chat_id, msg_id, f'⚠️ عندك حساب بنكي بالفعل في {existing["bank"]}')
+            return
+        acc = create_bank_account(data, chat_id, user_id, bank_name)
+        save_data(data)
+        await edit_msg(chat_id, msg_id,
+            f'✅ <b>تم انشاء حساب بنكي</b>\n\n'
+            f'🏦 البنك: {bank_name}\n'
+            f'💳 رقم الحساب: <code>{acc["account_number"]}</code>\n\n'
+            f'<i>(للعلم هذه العمليات لعبة وليست حقيقية)</i>'
+        )
+        return
+
+    if data_cb.startswith('kursi_ask:'):
+        group_chat_id = int(data_cb.split(':')[1])
+        data = load_data()
+        game = get_game_state(data, group_chat_id)
+        if not game.get('active') or not game.get('chosen_id'):
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': 'اللعبة انتهت', 'show_alert': True})
+            return
+        if game['questions_count'] >= 50:
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': 'انتهت الأسئلة المسموحة (50 سؤال)', 'show_alert': True})
+            return
+        private_states[str(user_id)] = {
+            'step': 'await_kursi_question',
+            'group_chat_id': group_chat_id,
+            'chosen_id': game['chosen_id'],
+            'chosen_name': game.get('chosen_name', 'الشخص المختار')
+        }
+        bot_info = await api_call('getMe', {})
+        bot_username = (bot_info or {}).get('username', '')
+        await api_call('answerCallbackQuery', {
+            'callback_query_id': cb['id'],
+            'text': '✅ افتح محادثة البوت الخاصة وأرسل سؤالك',
+            'show_alert': True
+        })
+        await send(user_id,
+            f'✏️ أرسل سؤالك الآن\n\n'
+            f'سيُرسَل السؤال بشكل مجهول إلى المجموعة\n'
+            f'اقصى عدد للأسئلة: 50 سؤال\n\n'
+            f'أرسل السؤال:'
+        )
+        return
+
     if data_cb.startswith('promote_in_group:'):
         group_id = int(data_cb.split(':')[1])
         await api_call('promoteChatMember', {
@@ -537,7 +745,6 @@ async def handle_update(update):
         await handle_callback(update['callback_query'])
         return
 
-    # Handle edited messages
     if 'edited_message' in update:
         await handle_edited_message(update['edited_message'])
         return
@@ -562,6 +769,44 @@ async def handle_update(update):
                 return
 
     if chat_type == 'private':
+        uid_str = str(user_id)
+        if uid_str in private_states:
+            pstate = private_states[uid_str]
+            if pstate.get('step') == 'await_kursi_question':
+                if text:
+                    group_chat_id = pstate['group_chat_id']
+                    chosen_name = pstate.get('chosen_name', 'الشخص المختار')
+                    data = load_data()
+                    game = get_game_state(data, group_chat_id)
+                    if game.get('active') and game.get('chosen_id'):
+                        if game['questions_count'] < 50:
+                            game['questions_count'] += 1
+                            save_data(data)
+                            remaining = 50 - game['questions_count']
+                            await send(group_chat_id,
+                                f'❓ السؤال إليك {chosen_name} .\n\n'
+                                f'<b>{text}</b>\n\n'
+                                f'📊 السؤال {game["questions_count"]}/50 | المتبقي: {remaining}',
+                                {
+                                    'reply_markup': {
+                                        'inline_keyboard': [[
+                                            {'text': '❓ اسالوه هنا', 'callback_data': f'kursi_ask:{group_chat_id}'}
+                                        ]]
+                                    }
+                                }
+                            )
+                            del private_states[uid_str]
+                            await send(user_id, '✅ تم إرسال سؤالك بشكل مجهول!')
+                        else:
+                            del private_states[uid_str]
+                            await send(user_id, '⚠️ انتهت الأسئلة المسموحة (50 سؤال)')
+                    else:
+                        del private_states[uid_str]
+                        await send(user_id, '⚠️ اللعبة انتهت')
+                else:
+                    await send(user_id, '⚠️ أرسل نص السؤال فقط')
+                return
+
         if text and text.startswith('/start'):
             await handle_start(msg)
         return
@@ -634,7 +879,7 @@ async def handle_edited_message(msg):
     elif settings.get('lock_media_edit'):
         await delete(chat_id, msg_id)
         m = mention(from_)
-        await send(chat_id, f'⚠️ {m}\nممنوع تعديل الرسائل هنا')
+        await send(chat_id, f'⚠️ {m}\nممنوع تعديل الرسائل هنا', {'reply_to_message_id': msg_id})
 
 # ===========================
 # BOT ADDED AS ADMIN HANDLER
@@ -682,6 +927,7 @@ async def media_mod(msg, data, settings):
     from_ = msg.get('from', {})
     user_id = from_.get('id')
     m = mention(from_)
+    reply = {'reply_to_message_id': msg_id}
 
     if await is_tg_admin(chat_id, user_id):
         return
@@ -689,21 +935,19 @@ async def media_mod(msg, data, settings):
     is_forward = msg.get('forward_from') or msg.get('forward_from_chat') or msg.get('forward_sender_name')
     if is_forward and settings['lock_forward']:
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع التوجيه والتحويل هنا')
+        await send(chat_id, f'⚠️ {m}\nممنوع التوجيه والتحويل هنا', reply)
         return
 
-    # Files/Documents
     if msg.get('document'):
         if settings.get('lock_files'):
             await delete(chat_id, msg_id)
-            await send(chat_id, f'⚠️ عذراً {m}\nممنوع ارسال الملفات هنا')
+            await send(chat_id, f'⚠️ عذراً {m}\nممنوع ارسال الملفات هنا', reply)
             return
 
     if msg.get('photo'):
         photo_list = msg['photo']
         file_id = photo_list[-1]['file_id']
 
-        # NSFW with restriction
         if settings.get('lock_nsfw_restrict'):
             is_violation, violation_type = await check_image_nsfw(file_id)
             if is_violation:
@@ -721,7 +965,6 @@ async def media_mod(msg, data, settings):
                 ))
                 return
 
-        # NSFW with warning (5 warnings = restrict)
         if settings.get('lock_nsfw_warn'):
             is_violation, violation_type = await check_image_nsfw(file_id)
             if is_violation:
@@ -747,7 +990,6 @@ async def media_mod(msg, data, settings):
                     ))
                 return
 
-        # Basic NSFW lock
         if settings.get('lock_nsfw', False):
             is_violation, violation_type = await check_image_nsfw(file_id)
             if is_violation:
@@ -762,10 +1004,9 @@ async def media_mod(msg, data, settings):
 
         if settings['lock_photos']:
             await delete(chat_id, msg_id)
-            await send(chat_id, f'⚠️ عذرا عزيزي {m}\nممنوع ارسال الصور هنا')
+            await send(chat_id, f'⚠️ عذرا عزيزي {m}\nممنوع ارسال الصور هنا', reply)
             return
 
-        # Queue for auto-clean
         if settings.get('clean_auto'):
             add_to_clean_queue(chat_id, msg_id, 'photos')
         return
@@ -773,7 +1014,7 @@ async def media_mod(msg, data, settings):
     if msg.get('video'):
         if settings['lock_videos']:
             await delete(chat_id, msg_id)
-            await send(chat_id, f'⚠️ عذرا عزيزي {m}\nممنوع ارسال الفيديوهات هنا')
+            await send(chat_id, f'⚠️ عذرا عزيزي {m}\nممنوع ارسال الفيديوهات هنا', reply)
             return
         if settings.get('clean_auto'):
             add_to_clean_queue(chat_id, msg_id, 'videos')
@@ -781,22 +1022,22 @@ async def media_mod(msg, data, settings):
 
     if msg.get('voice') and settings['lock_audio']:
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m} ممنوع ارسال الرسائل الصوتية هنا')
+        await send(chat_id, f'⚠️ {m} ممنوع ارسال الرسائل الصوتية هنا', reply)
         return
 
     if msg.get('audio') and settings['lock_music']:
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m} ممنوع ارسال الاغاني هنا')
+        await send(chat_id, f'⚠️ {m} ممنوع ارسال الاغاني هنا', reply)
         return
 
     if msg.get('sticker'):
         if msg['sticker'].get('is_animated') and settings['lock_animated']:
             await delete(chat_id, msg_id)
-            await send(chat_id, f'⚠️ {m} ممنوع الملصقات المتحركة هنا')
+            await send(chat_id, f'⚠️ {m} ممنوع الملصقات المتحركة هنا', reply)
             return
         if not msg['sticker'].get('is_animated') and settings['lock_stickers']:
             await delete(chat_id, msg_id)
-            await send(chat_id, f'⚠️ {m} ممنوع الملصقات هنا')
+            await send(chat_id, f'⚠️ {m} ممنوع الملصقات هنا', reply)
             return
         if settings.get('clean_auto'):
             add_to_clean_queue(chat_id, msg_id, 'stickers')
@@ -813,6 +1054,7 @@ async def content_mod(msg, data, settings):
     user_id = from_.get('id')
     text = msg.get('text') or msg.get('caption') or ''
     m = mention(from_)
+    reply = {'reply_to_message_id': msg_id}
 
     if await is_tg_admin(chat_id, user_id):
         return False
@@ -820,53 +1062,50 @@ async def content_mod(msg, data, settings):
     is_forward = msg.get('forward_from') or msg.get('forward_from_chat') or msg.get('forward_sender_name')
     if is_forward and settings['lock_forward']:
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع التوجيه والتحويل هنا')
+        await send(chat_id, f'⚠️ {m}\nممنوع التوجيه والتحويل هنا', reply)
         return True
 
     swears = ['انيجك', 'انيج امك', 'كسمك', 'عير بابوك', 'عير بامك', 'قحبه', 'كحبه', 'شرموط', 'شرموطه', 'زبفيك', 'عيرك', 'كسي', 'زبي', 'عيري']
     if settings['lock_swear'] and any(w in text for w in swears):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nالسب ممنوع هنا ❌')
+        await send(chat_id, f'⚠️ {m}\nالسب ممنوع هنا ❌', reply)
         return True
 
     if settings['lock_links'] and re.search(r'(https?://|t\.me/|www\.)', text, re.IGNORECASE):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع ارسال الروابط هنا')
+        await send(chat_id, f'⚠️ {m}\nممنوع ارسال الروابط هنا', reply)
         return True
 
     if settings['lock_mention'] and re.search(r'@\w+', text):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع التاك هنا')
+        await send(chat_id, f'⚠️ {m}\nممنوع التاك هنا', reply)
         return True
 
-    # Phone number detection: 9-12 digits
-    phone_pattern = r'(?<!\d)(\+?\d[\d\s\-]{8,11}\d)(?!\d)'
     if settings['lock_numbers'] and re.search(r'(?<!\d)\+?\d{9,12}(?!\d)', text):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع ارسال الارقام هنا')
+        await send(chat_id, f'⚠️ {m}\nممنوع ارسال الارقام هنا', reply)
         return True
 
     if settings['lock_clutter'] and len(text) > 1000:
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع ارسال الرسائل الطويلة هنا')
+        await send(chat_id, f'⚠️ {m}\nممنوع ارسال الرسائل الطويلة هنا', reply)
         return True
 
     if settings['lock_english'] and re.search(r'[a-zA-Z]', text):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع الكتابة بالانجليزية هنا')
+        await send(chat_id, f'⚠️ {m}\nممنوع الكتابة بالانجليزية هنا', reply)
         return True
 
     if settings['lock_chinese'] and re.search(r'[\u4e00-\u9fff]', text):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع اللغة الصينية هنا')
+        await send(chat_id, f'⚠️ {m}\nممنوع اللغة الصينية هنا', reply)
         return True
 
     if settings['lock_russian'] and re.search(r'[\u0400-\u04FF]', text):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع اللغة الروسية هنا')
+        await send(chat_id, f'⚠️ {m}\nممنوع اللغة الروسية هنا', reply)
         return True
 
-    # Queue numbers and clutter for auto-clean if enabled
     if settings.get('clean_auto'):
         if settings.get('clean_numbers') and re.search(r'(?<!\d)\+?\d{9,12}(?!\d)', text):
             add_to_clean_queue(chat_id, msg_id, 'numbers')
@@ -880,7 +1119,6 @@ async def content_mod(msg, data, settings):
 # ===========================
 
 async def process_cmd(msg, data, state, text, settings):
-    import random
     chat_id = msg['chat']['id']
     msg_id = msg['message_id']
     from_ = msg['from']
@@ -889,7 +1127,7 @@ async def process_cmd(msg, data, state, text, settings):
     cid = str(chat_id)
     reply = {'reply_to_message_id': msg_id}
 
-    # ردود تلقائية على عبارات معينة
+    # ردود تلقائية
     if not settings.get('disable_auto_replies'):
         if re.match(r'^بوت', text) or text == 'بوت':
             await send(chat_id, random.choice(['وش تبي 😒', 'اهلا 👋', 'شكد مزعج 😤', 'عندي اسم ترا 🌹']), reply)
@@ -922,25 +1160,47 @@ async def process_cmd(msg, data, state, text, settings):
         await send(chat_id, clean_text, {'reply_markup': clean_keyboard})
         return
 
+    # ===========================
+    # أوامر الخدمية
+    # ===========================
     if not settings['disable_service']:
         if text == 'بايو':
-            mem = await get_chat_member(chat_id, user_id)
-            bio = (mem or {}).get('user', {}).get('bio')
-            await send(chat_id, f'📋 بايو {m}:\n{bio}' if bio else f'😕 {m} ما عندك بايو', reply)
+            if msg.get('reply_to_message'):
+                tf = msg['reply_to_message']['from']
+                tf_info = await api_call('getChat', {'chat_id': tf['id']})
+                bio = (tf_info or {}).get('bio')
+                await send(chat_id, f'📋 بايو {mention(tf)}:\n{bio}' if bio else f'😕 {mention(tf)} ما عنده بايو', reply)
+            else:
+                user_info = await api_call('getChat', {'chat_id': user_id})
+                bio = (user_info or {}).get('bio')
+                await send(chat_id, f'📋 بايو {m}:\n{bio}' if bio else f'😕 {m} ما عندك بايو', reply)
             return
+
+        if text == 'افتاري':
+            photos = await api_call('getUserProfilePhotos', {'user_id': user_id, 'limit': 1})
+            if photos and photos.get('total_count', 0) > 0:
+                file_id = photos['photos'][0][-1]['file_id']
+                await api_call('sendPhoto', {'chat_id': chat_id, 'photo': file_id, 'reply_to_message_id': msg_id})
+            else:
+                await send(chat_id, f'😕 {m} ما عندك صورة شخصية', reply)
+            return
+
         if text == 'اسمي':
             await send(chat_id, f'👤 اسمك: <b>{name(from_)}</b>', reply)
             return
+
         if text in ['اسمه', 'اسمها']:
             if msg.get('reply_to_message'):
                 await send(chat_id, f'👤 اسم الشخص: <b>{name(msg["reply_to_message"]["from"])}</b>', reply)
             else:
                 await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة اسمه', reply)
             return
+
         if text == 'يوزري':
             uname = from_.get('username')
             await send(chat_id, f'🔗 يوزرك: @{uname}' if uname else '😕 ما عندك يوزر', reply)
             return
+
         if text == 'يوزره':
             if msg.get('reply_to_message'):
                 u = msg['reply_to_message']['from'].get('username')
@@ -948,6 +1208,7 @@ async def process_cmd(msg, data, state, text, settings):
             else:
                 await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة يوزره', reply)
             return
+
         if text == 'ايدي' and not settings['disable_id']:
             if msg.get('reply_to_message'):
                 tf = msg['reply_to_message']['from']
@@ -955,23 +1216,37 @@ async def process_cmd(msg, data, state, text, settings):
             else:
                 await send(chat_id, f'🆔 ايدك: <code>{user_id}</code>', reply)
             return
+
         if text == 'الرابط' and not settings['disable_link']:
             link = await api_call('exportChatInviteLink', {'chat_id': chat_id})
             await send(chat_id, f'🔗 رابط المجموعة:\n{link}' if link else '⚠️ تعذر الحصول على الرابط', reply)
             return
+
         if text == 'المالك':
             admins = await api_call('getChatAdministrators', {'chat_id': chat_id})
             if admins:
                 owner = next((a for a in admins if a.get('status') == 'creator'), None)
                 if owner:
                     of = owner['user']
-                    await send(chat_id, f'👑 مالك المجموعة: {mention(of)}\n📋 البايو: {of.get("bio", "لا يوجد بايو")}')
+                    await send(chat_id, f'👑 مالك المجموعة: {mention(of)}', reply)
                     return
             await send(chat_id, '⚠️ لم أجد مالك المجموعة', reply)
             return
-        if text in ['رتبة', 'رتبتي']:
-            await send(chat_id, f'🏅 رتبتك: <b>{get_rank(data, chat_id, user_id)}</b>', reply)
+
+        if text in ['رتبة', 'رتبتي', 'رتب']:
+            if msg.get('reply_to_message'):
+                tf = msg['reply_to_message']['from']
+                rank = get_rank(data, chat_id, tf['id'])
+                mem2 = await get_chat_member(chat_id, tf['id'])
+                if mem2 and mem2.get('status') == 'creator':
+                    rank = 'مالك المجموعة'
+                elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
+                    rank = 'مشرف'
+                await send(chat_id, f'🏅 رتبة {name(tf)}: <b>{rank}</b>', reply)
+            else:
+                await send(chat_id, f'🏅 رتبتك: <b>{get_rank(data, chat_id, user_id)}</b>', reply)
             return
+
         if text in ['رتبته', 'رتبتها']:
             if msg.get('reply_to_message'):
                 tf = msg['reply_to_message']['from']
@@ -985,6 +1260,7 @@ async def process_cmd(msg, data, state, text, settings):
             else:
                 await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة رتبته', reply)
             return
+
         if text == 'انشاء':
             if msg.get('reply_to_message'):
                 tf = msg['reply_to_message']['from']
@@ -995,28 +1271,72 @@ async def process_cmd(msg, data, state, text, settings):
                 await send(chat_id, f'🗓️ تاريخ إنشاء حسابك:\n{creation}', reply)
             return
 
-    if not settings['disable_fun'] and await is_admin_up(data, chat_id, user_id):
+    # ===========================
+    # أوامر الرتب (تُفحص قبل التسلية)
+    # ===========================
+    rank_cmds = {
+        'رفع مالك أساسي': 'مالك أساسي', 'تنزيل مالك أساسي': 'عضو',
+        'رفع مالك': 'مالك', 'تنزيل مالك': 'عضو',
+        'رفع مدير': 'مدير', 'تنزيل مدير': 'عضو',
+        'رفع ادمن': 'ادمن', 'تنزيل ادمن': 'عضو',
+        'رفع مميز': 'مميز', 'تنزيل مميز': 'عضو'
+    }
+    if text in rank_cmds:
+        if not msg.get('reply_to_message'):
+            await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
+            return
+        if not (await is_owner_up(data, chat_id, user_id)):
+            await send(chat_id, '⛔ ليس لديك صلاحية', reply)
+            return
+        tf = msg['reply_to_message']['from']
+        set_rank(data, chat_id, tf['id'], rank_cmds[text])
+        is_up = text.startswith('رفع')
+        if is_up:
+            await send(chat_id, f'✅ تم رفع {mention(tf)} إلى رتبة <b>{rank_cmds[text]}</b>\nبواسطة {m}', reply)
+        else:
+            await send(chat_id, f'✅ تم تنزيل {mention(tf)}\nبواسطة {m}', reply)
+        return
+
+    # ===========================
+    # أوامر التسلية
+    # ===========================
+    if not settings['disable_fun']:
         fun_match = re.match(r'^رفع\s+(.+)$', text)
         if fun_match and msg.get('reply_to_message'):
             await send(chat_id, f'✅ تم رفع {mention(msg["reply_to_message"]["from"])} {fun_match.group(1).strip()} للتسلية 😜', reply)
             return
 
+    # ===========================
+    # قائمة الأوامر
+    # ===========================
     if text in ['الاوامر', 'اوامر'] and await is_admin_up(data, chat_id, user_id):
-        await send(chat_id, '🤖 <b>قائمة الأوامر</b>\n\n- أوامر ① الخدمية\n- أوامر ② التسليه\n- أوامر ③ القفل والفتح\n- أوامر ④ الإعدادات', {
-            'reply_markup': {'inline_keyboard': [[
-                {'text': '① خدمية', 'callback_data': 'menu_service'},
-                {'text': '② تسليه', 'callback_data': 'menu_fun'},
-                {'text': '③ قفل/فتح', 'callback_data': 'menu_locks'},
-                {'text': '④ إعدادات', 'callback_data': 'menu_settings'}
-            ]]}
+        await send(chat_id, '🤖 <b>قائمة الأوامر</b>\n\n- أوامر ① الخدمية\n- أوامر ② التسليه\n- أوامر ③ القفل والفتح\n- أوامر ④ الإعدادات\n- أوامر ⑤ الألعاب', {
+            'reply_markup': {'inline_keyboard': [
+                [
+                    {'text': '① خدمية', 'callback_data': 'menu_service'},
+                    {'text': '② تسليه', 'callback_data': 'menu_fun'},
+                ],
+                [
+                    {'text': '③ قفل/فتح', 'callback_data': 'menu_locks'},
+                    {'text': '④ إعدادات', 'callback_data': 'menu_settings'},
+                ],
+                [
+                    {'text': '⑤ الألعاب', 'callback_data': 'menu_games'},
+                ]
+            ]},
+            'reply_to_message_id': msg_id
         })
         return
 
+    # ===========================
+    # الردود المخصصة
+    # ===========================
     if text == 'اضف رد' and await is_admin_up(data, chat_id, user_id):
         if cid not in state: state[cid] = {}
         state[cid][str(user_id)] = {'step': 'await_name'}
         await send(chat_id, '📝 أرسل اسم الرد:', reply)
         return
+
     if text == 'مسح رد' and await is_admin_up(data, chat_id, user_id):
         if cid not in state: state[cid] = {}
         state[cid][str(user_id)] = {'step': 'await_delete_name'}
@@ -1029,11 +1349,14 @@ async def process_cmd(msg, data, state, text, settings):
         if rd['type'] == 'text':
             await send(chat_id, rd['content'], reply)
         elif rd['type'] == 'photo':
-            await api_call('sendPhoto', {'chat_id': chat_id, 'photo': rd['file_id'], 'caption': rd.get('caption', ''), 'parse_mode': 'HTML'})
+            await api_call('sendPhoto', {'chat_id': chat_id, 'photo': rd['file_id'], 'caption': rd.get('caption', ''), 'parse_mode': 'HTML', 'reply_to_message_id': msg_id})
         elif rd['type'] == 'video':
-            await api_call('sendVideo', {'chat_id': chat_id, 'video': rd['file_id'], 'caption': rd.get('caption', ''), 'parse_mode': 'HTML'})
+            await api_call('sendVideo', {'chat_id': chat_id, 'video': rd['file_id'], 'caption': rd.get('caption', ''), 'parse_mode': 'HTML', 'reply_to_message_id': msg_id})
         return
 
+    # ===========================
+    # أوامر القفل والإعدادات
+    # ===========================
     if await is_admin_up(data, chat_id, user_id):
         lock_map = {
             'قفل السب': 'lock_swear', 'فتح السب': 'lock_swear',
@@ -1080,7 +1403,8 @@ async def process_cmd(msg, data, state, text, settings):
             'تعطيل الترحيب': ['disable_welcome', True], 'تفعيل الترحيب': ['disable_welcome', False],
             'تعطيل الرابط': ['disable_link', True], 'تفعيل الرابط': ['disable_link', False],
             'تعطيل الردود التلقائية': ['disable_auto_replies', True], 'تفعيل الردود التلقائية': ['disable_auto_replies', False],
-            'تعطيل الردود التلقائيه': ['disable_auto_replies', True], 'تفعيل الردود التلقائيه': ['disable_auto_replies', False]
+            'تعطيل الردود التلقائيه': ['disable_auto_replies', True], 'تفعيل الردود التلقائيه': ['disable_auto_replies', False],
+            'تعطيل الالعاب': ['disable_games', True], 'تفعيل الالعاب': ['disable_games', False],
         }
         if text in dis_map:
             key, val = dis_map[text]
@@ -1088,29 +1412,9 @@ async def process_cmd(msg, data, state, text, settings):
             await send(chat_id, f'{"🔴 تم التعطيل" if val else "🟢 تم التفعيل"}: <b>{text}</b>', reply)
             return
 
-    rank_cmds = {
-        'رفع مالك أساسي': 'مالك أساسي', 'تنزيل مالك أساسي': 'عضو',
-        'رفع مالك': 'مالك', 'تنزيل مالك': 'عضو',
-        'رفع مدير': 'مدير', 'تنزيل مدير': 'عضو',
-        'رفع ادمن': 'ادمن', 'تنزيل ادمن': 'عضو',
-        'رفع مميز': 'مميز', 'تنزيل مميز': 'عضو'
-    }
-    if text in rank_cmds:
-        if not msg.get('reply_to_message'):
-            await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
-            return
-        if not (await is_owner_up(data, chat_id, user_id)):
-            await send(chat_id, '⛔ ليس لديك صلاحية', reply)
-            return
-        tf = msg['reply_to_message']['from']
-        set_rank(data, chat_id, tf['id'], rank_cmds[text])
-        is_up = text.startswith('رفع')
-        if is_up:
-            await send(chat_id, f'✅ تم رفع {mention(tf)} إلى رتبة <b>{rank_cmds[text]}</b>\nبواسطة {m}')
-        else:
-            await send(chat_id, f'✅ تم تنزيل {mention(tf)}\nبواسطة {m}')
-        return
-
+    # ===========================
+    # أوامر الإدارة
+    # ===========================
     if await is_admin_up(data, chat_id, user_id):
         if text == 'كتم':
             if not msg.get('reply_to_message'):
@@ -1118,8 +1422,9 @@ async def process_cmd(msg, data, state, text, settings):
                 return
             tf = msg['reply_to_message']['from']
             await restrict(chat_id, tf['id'], {'can_send_messages': False})
-            await send(chat_id, f'🔇 تم كتم {mention(tf)}\nبواسطة {m}')
+            await send(chat_id, f'🔇 تم كتم {mention(tf)}\nبواسطة {m}', reply)
             return
+
         if text == 'تقييد':
             if not msg.get('reply_to_message'):
                 await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
@@ -1129,8 +1434,9 @@ async def process_cmd(msg, data, state, text, settings):
                 'can_send_messages': False, 'can_send_media_messages': False,
                 'can_send_polls': False, 'can_send_other_messages': False, 'can_add_web_page_previews': False
             })
-            await send(chat_id, f'🚫 تم تقييد {mention(tf)}\nبواسطة {m}')
+            await send(chat_id, f'🚫 تم تقييد {mention(tf)}\nبواسطة {m}', reply)
             return
+
         if text in ['رفع القيود', 'الغاء الكتم', 'الغاء التقييد']:
             if not msg.get('reply_to_message'):
                 await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
@@ -1140,8 +1446,9 @@ async def process_cmd(msg, data, state, text, settings):
                 'can_send_messages': True, 'can_send_media_messages': True,
                 'can_send_polls': True, 'can_send_other_messages': True, 'can_add_web_page_previews': True
             })
-            await send(chat_id, f'✅ تم رفع القيود عن {mention(tf)}\nبواسطة {m}')
+            await send(chat_id, f'✅ تم رفع القيود عن {mention(tf)}\nبواسطة {m}', reply)
             return
+
         if text == 'طرد':
             if not msg.get('reply_to_message'):
                 await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
@@ -1149,8 +1456,9 @@ async def process_cmd(msg, data, state, text, settings):
             tf = msg['reply_to_message']['from']
             await ban(chat_id, tf['id'])
             await unban(chat_id, tf['id'])
-            await send(chat_id, f'👢 تم طرد {mention(tf)}\nبواسطة {m}')
+            await send(chat_id, f'👢 تم طرد {mention(tf)}\nبواسطة {m}', reply)
             return
+
         if text == 'مسح':
             if not msg.get('reply_to_message'):
                 await send(chat_id, '⚠️ رد على الرسالة المراد مسحها', reply)
@@ -1159,6 +1467,366 @@ async def process_cmd(msg, data, state, text, settings):
             await delete(chat_id, msg_id)
             await send(chat_id, '🗑️ تم مسح الرسالة')
             return
+
+    # ===========================
+    # الألعاب
+    # ===========================
+    if not settings.get('disable_games'):
+        await handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid, reply)
+
+# ===========================
+# GAMES HANDLER
+# ===========================
+
+async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid, reply):
+    now = datetime.now().timestamp()
+
+    # ===========================
+    # لعبة الكرسي
+    # ===========================
+    if text == 'كرسي':
+        game = get_game_state(data, chat_id)
+        if game.get('active'):
+            await send(chat_id, '⚠️ هناك لعبة جارية بالفعل، انتظر حتى تنتهي', reply)
+            return
+        game['active'] = False
+        game['starter_id'] = user_id
+        game['players'] = [{'id': user_id, 'name': name(from_)}]
+        game['chosen_id'] = None
+        game['chosen_name'] = None
+        game['questions_count'] = 0
+        game['waiting'] = True
+        save_data(data)
+        await send(chat_id,
+            f'↢ تم بداء اللعبة وتم تسجيلك {m}\n'
+            f'↢ اللي بيلعب يرسل ( انا ) .',
+            reply
+        )
+        return
+
+    if text == 'انا':
+        game = get_game_state(data, chat_id)
+        if not game.get('waiting'):
+            return
+        players = game.get('players', [])
+        already = any(p['id'] == user_id for p in players)
+        if already:
+            await send(chat_id, f'⚠️ {m} أنت مسجل بالفعل', reply)
+            return
+        players.append({'id': user_id, 'name': name(from_)})
+        game['players'] = players
+        save_data(data)
+        await send(chat_id,
+            f'↢ تم ضفتك للعبة {m}\n'
+            f'↢ للانتهاء يرسل نعم اللي بداء اللعبة .',
+            reply
+        )
+        return
+
+    if text == 'نعم':
+        game = get_game_state(data, chat_id)
+        if not game.get('waiting'):
+            return
+        if game.get('starter_id') != user_id:
+            await send(chat_id, '⚠️ فقط من بدأ اللعبة يقدر يبدأها', reply)
+            return
+        players = game.get('players', [])
+        if len(players) < 2:
+            await send(chat_id, '⚠️ يجب أن ينضم على الأقل لاعب واحد آخر', reply)
+            return
+        chosen = random.choice(players)
+        game['active'] = True
+        game['waiting'] = False
+        game['chosen_id'] = chosen['id']
+        game['chosen_name'] = chosen['name']
+        game['questions_count'] = 0
+        save_data(data)
+        chosen_mention = f'<a href="tg://user?id={chosen["id"]}">{chosen["name"]}</a>'
+        await send(chat_id,
+            f'↢ اخترت الشخص ↢ {chosen_mention} لديكم بس 50 اسئله',
+            {
+                'reply_markup': {
+                    'inline_keyboard': [[
+                        {'text': '❓ اسالوه هنا', 'callback_data': f'kursi_ask:{chat_id}'}
+                    ]]
+                },
+                'reply_to_message_id': msg_id
+            }
+        )
+        return
+
+    if text == 'انهاء':
+        game = get_game_state(data, chat_id)
+        if not (game.get('active') or game.get('waiting')):
+            return
+        if game.get('starter_id') != user_id:
+            await send(chat_id, '⚠️ فقط من بدأ اللعبة يقدر ينهيها', reply)
+            return
+        game['active'] = False
+        game['waiting'] = False
+        game['starter_id'] = None
+        game['players'] = []
+        game['chosen_id'] = None
+        game['chosen_name'] = None
+        game['questions_count'] = 0
+        save_data(data)
+        await send(chat_id, f'✅ تم إنهاء لعبة الكرسي بواسطة {m}', reply)
+        return
+
+    # ===========================
+    # لعبة ممتلكاتي - إنشاء حساب
+    # ===========================
+    if text == 'انشاء حساب بنكي':
+        existing = get_bank(data, chat_id, user_id)
+        if existing:
+            await send(chat_id, f'⚠️ {m} عندك حساب بنكي بالفعل في {existing["bank"]}\nاكتب <b>حسابي</b> لعرض حسابك', reply)
+            return
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '🏦 بنك الاهلي', 'callback_data': 'bank_create:بنك الاهلي'}],
+                [{'text': '🏦 بنك الرافدين', 'callback_data': 'bank_create:بنك الرافدين'}],
+                [{'text': '🏦 بنك الراجحي', 'callback_data': 'bank_create:بنك الراجحي'}],
+            ]
+        }
+        await send(chat_id,
+            f'🏦 اختر أي حساب تريد {m}:\n\n-> بنك الاهلي\n-> بنك الرافدين\n-> بنك الراجحي',
+            {'reply_markup': keyboard, 'reply_to_message_id': msg_id}
+        )
+        return
+
+    # ===========================
+    # عرض الحساب البنكي
+    # ===========================
+    if text == 'حسابي':
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي\nاكتب <b>انشاء حساب بنكي</b> لفتح حساب', reply)
+            return
+        job_text = acc.get('job') or 'بدون وظيفة'
+        await send(chat_id,
+            f'💳 <b>حسابك البنكي</b>\n\n'
+            f'~{acc["account_number"]}\n'
+            f'فلوسك : {acc["balance"]:,} دينار\n'
+            f'اسم البنك : {acc["bank"]}\n'
+            f'الوظيفة : {job_text}',
+            reply
+        )
+        return
+
+    # ===========================
+    # عرض الفلوس
+    # ===========================
+    if text == 'فلوسي':
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
+            return
+        await send(chat_id, f'💰 فلوسك ←  {acc["balance"]:,} دينار', reply)
+        return
+
+    if text == 'فلوسه':
+        if msg.get('reply_to_message'):
+            tf = msg['reply_to_message']['from']
+            tf_acc = get_bank(data, chat_id, tf['id'])
+            if not tf_acc:
+                await send(chat_id, f'😕 {mention(tf)} ما عنده حساب بنكي', reply)
+            else:
+                await send(chat_id, f'💰 فلوسه ←  {tf_acc["balance"]:,} دينار', reply)
+        else:
+            await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة فلوسه', reply)
+        return
+
+    # ===========================
+    # الراتب
+    # ===========================
+    if text == 'راتب':
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي\nاكتب <b>انشاء حساب بنكي</b> أولاً', reply)
+            return
+        last_salary = acc.get('last_salary', 0)
+        cooldown = 7 * 3600
+        elapsed = now - last_salary
+        if last_salary > 0 and elapsed < cooldown:
+            remaining = int(cooldown - elapsed)
+            h = remaining // 3600
+            mn = (remaining % 3600) // 60
+            await send(chat_id, f'~~~استلمت راتب ارجع وره 7 ساعات\n⏰ المتبقي: {h} ساعة و {mn} دقيقة', reply)
+            return
+        job_name = random.choice(list(JOBS.keys()))
+        sal_min, sal_max = JOBS[job_name]
+        salary = random.randint(sal_min, sal_max)
+        acc['job'] = job_name
+        acc['balance'] = acc.get('balance', 0) + salary
+        acc['last_salary'] = now
+        save_data(data)
+        await send(chat_id,
+            f'💰 {m} استلمت راتبك!\n\n'
+            f'👷 الوظيفة: <b>{job_name}</b>\n'
+            f'💵 الراتب: <b>{salary:,}</b> دينار\n'
+            f'💳 رصيدك الجديد: <b>{acc["balance"]:,}</b> دينار',
+            reply
+        )
+        return
+
+    # ===========================
+    # الزرف (السرقة)
+    # ===========================
+    if text == 'زرف' and msg.get('reply_to_message'):
+        tf = msg['reply_to_message']['from']
+        if tf['id'] == user_id:
+            await send(chat_id, '⚠️ ما تقدر تزرف نفسك 😑', reply)
+            return
+        stealer_acc = get_bank(data, chat_id, user_id)
+        if not stealer_acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
+            return
+        victim_acc = get_bank(data, chat_id, tf['id'])
+        if not victim_acc:
+            await send(chat_id, f'😕 {mention(tf)} ما عنده حساب بنكي', reply)
+            return
+        last_steal = stealer_acc.get('last_steal', 0)
+        cooldown = 4 * 3600
+        elapsed = now - last_steal
+        if last_steal > 0 and elapsed < cooldown:
+            remaining = int(cooldown - elapsed)
+            h = remaining // 3600
+            mn = (remaining % 3600) // 60
+            await send(chat_id, f'⚠️ {m} ما تقدر تزرف الحين\n⏰ المتبقي: {h} ساعة و {mn} دقيقة', reply)
+            return
+        stolen = random.randint(1000, 2500)
+        if victim_acc['balance'] < stolen:
+            stolen = victim_acc['balance']
+        if stolen <= 0:
+            await send(chat_id, f'😅 {mention(tf)} ما عنده فلوس تستاهل السرقة', reply)
+            return
+        victim_acc['balance'] -= stolen
+        stealer_acc['balance'] = stealer_acc.get('balance', 0) + stolen
+        stealer_acc['last_steal'] = now
+        save_data(data)
+        await send(chat_id,
+            f'🦹 تم زرف العضو {mention(tf)}\n'
+            f'💸 المبلغ المسروق: <b>{stolen:,}</b> دينار\n'
+            f'💳 رصيدك الجديد: <b>{stealer_acc["balance"]:,}</b> دينار',
+            reply
+        )
+        return
+
+    # ===========================
+    # الحظ (المقامرة)
+    # ===========================
+    luck_match = re.match(r'^حظ\s+(\d+)$', text)
+    if luck_match:
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
+            return
+        bet = int(luck_match.group(1))
+        if bet <= 0:
+            await send(chat_id, '⚠️ المبلغ يجب أن يكون أكبر من صفر', reply)
+            return
+        if acc.get('balance', 0) < bet:
+            await send(chat_id, f'💸 فلوسك ما تكفي يا فكر\n💳 رصيدك: <b>{acc.get("balance", 0):,}</b> دينار', reply)
+            return
+        roll = random.random()
+        if roll < 0.40:
+            acc['balance'] -= bet
+            save_data(data)
+            await send(chat_id,
+                f'😢 {m} خسرت!\n\n'
+                f'💸 خسرت: <b>{bet:,}</b> دينار\n'
+                f'💳 رصيدك: <b>{acc["balance"]:,}</b> دينار',
+                reply
+            )
+        elif roll < 0.95:
+            gain_pct = random.randint(1, 60) / 100
+            gain = int(bet * gain_pct)
+            acc['balance'] += gain
+            save_data(data)
+            await send(chat_id,
+                f'🎉 {m} ربحت!\n\n'
+                f'💰 ربحت: <b>{gain:,}</b> دينار ({int(gain_pct*100)}%)\n'
+                f'💳 رصيدك: <b>{acc["balance"]:,}</b> دينار',
+                reply
+            )
+        else:
+            doubled = bet * 2
+            acc['balance'] += doubled
+            save_data(data)
+            await send(chat_id,
+                f'🤑 {m} حظك جبار! المبلغ تضاعف 2x!\n\n'
+                f'💰 ربحت: <b>{doubled:,}</b> دينار\n'
+                f'💳 رصيدك: <b>{acc["balance"]:,}</b> دينار',
+                reply
+            )
+        return
+
+    # ===========================
+    # الشراء
+    # ===========================
+    buy_match = re.match(r'^شراء\s+(\d+)\s+(.+)$', text)
+    if buy_match:
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
+            return
+        qty = int(buy_match.group(1))
+        item_raw = buy_match.group(2).strip()
+        item_key = normalize_item(item_raw)
+        if not item_key or item_key not in ITEM_PRICES:
+            items_list = '، '.join(set(ITEM_PRICES.keys()) - set(ITEM_SINGULAR.values()))
+            await send(chat_id,
+                f'⚠️ اسم الشيء غير صحيح\n\n'
+                f'الأشياء المتاحة:\n'
+                f'سيارة | طيارة | قصر | بيت | جندي | فيل | برج | دبابة',
+                reply
+            )
+            return
+        price = ITEM_PRICES[item_key] * qty
+        if acc.get('balance', 0) < price:
+            await send(chat_id,
+                f'💸 فلوسك ما تكفي يا فكر\n'
+                f'💳 رصيدك: <b>{acc.get("balance", 0):,}</b> دينار\n'
+                f'💰 السعر: <b>{price:,}</b> دينار',
+                reply
+            )
+            return
+        acc['balance'] -= price
+        if 'properties' not in acc:
+            acc['properties'] = {}
+        acc['properties'][item_key] = acc['properties'].get(item_key, 0) + qty
+        save_data(data)
+        emoji = ITEM_EMOJI.get(item_key, '🏷️')
+        await send(chat_id,
+            f'✅ {m} اشتريت <b>{qty} {item_key}</b> {emoji}\n\n'
+            f'💸 دفعت: <b>{price:,}</b> دينار\n'
+            f'💳 رصيدك الجديد: <b>{acc["balance"]:,}</b> دينار',
+            reply
+        )
+        return
+
+    # ===========================
+    # ممتلكاتي
+    # ===========================
+    if text == 'ممتلكاتي':
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
+            return
+        props = acc.get('properties', {})
+        if not props:
+            await send(chat_id, f'😕 {m} ما عندك ممتلكات', reply)
+            return
+        lines = []
+        for item, qty in props.items():
+            emoji = ITEM_EMOJI.get(item, '🏷️')
+            lines.append(f'{emoji} {item}: <b>{qty}</b>')
+        await send(chat_id,
+            f'🏠 <b>ممتلكات {name(from_)}</b>\n\n' + '\n'.join(lines) +
+            f'\n\n💳 الرصيد: <b>{acc.get("balance", 0):,}</b> دينار',
+            reply
+        )
+        return
 
 # ===========================
 # STATE FLOW
@@ -1185,7 +1853,7 @@ async def handle_state(msg, data, state, user_state, text):
         save_state(state)
         save_data(data)
         clean_text, clean_keyboard = build_clean_menu(settings)
-        await send(chat_id, f'✅ تم تعيين وقت التنظيف: {minutes} {"دقيقة" if minutes == 1 else "دقائق"}')
+        await send(chat_id, f'✅ تم تعيين وقت التنظيف: {minutes} {"دقيقة" if minutes == 1 else "دقائق"}', reply)
         await send(chat_id, clean_text, {'reply_markup': clean_keyboard})
         return
 
@@ -1235,9 +1903,9 @@ async def webhook_handler(request):
         try:
             body = await request.json()
             if 'my_chat_member' in body:
-                await handle_my_chat_member(body['my_chat_member'])
+                asyncio.create_task(handle_my_chat_member(body['my_chat_member']))
             else:
-                await handle_update(body)
+                asyncio.create_task(handle_update(body))
         except Exception as e:
             print(f'Webhook error: {e}')
         return web.Response(text='OK', status=200)
