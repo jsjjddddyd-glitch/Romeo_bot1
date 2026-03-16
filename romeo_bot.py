@@ -378,10 +378,10 @@ async def youtube_search(query, max_results=4):
     try:
         session = await get_session()
         search_url = 'https://www.youtube.com/results'
-        params = {'search_query': query}
+        params = {'search_query': query, 'sp': 'EgIQAQ%3D%3D'}  # فلتر فيديوهات فقط
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'ar,en;q=0.9'
+            'Accept-Language': 'en-US,en;q=0.9'
         }
         async with session.get(search_url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status != 200:
@@ -391,23 +391,24 @@ async def youtube_search(query, max_results=4):
         results = []
         seen_ids = set()
 
-        pattern1 = r'"videoId":"([a-zA-Z0-9_-]{11})"[^}]*?"title":\{"runs":\[\{"text":"([^"]+)"'
-        for vid_id, title in re.findall(pattern1, html):
-            if vid_id not in seen_ids and len(vid_id) == 11:
+        # استخراج من videoRenderer فقط (نتائج حقيقية)
+        renderer_pattern = r'"videoRenderer":\{"videoId":"([a-zA-Z0-9_-]{11})"[^{]*?"title":\{"runs":\[\{"text":"([^"]+)"'
+        for vid_id, title in re.findall(renderer_pattern, html, re.DOTALL):
+            if vid_id not in seen_ids:
                 seen_ids.add(vid_id)
                 results.append({'id': vid_id, 'title': title[:60]})
             if len(results) >= max_results:
                 break
 
+        # fallback: استخراج أزواج videoId+title من نفس السياق
         if not results:
-            pattern2 = r'"videoId":"([a-zA-Z0-9_-]{11})"'
-            pattern3 = r'"text":"([^"]{5,80})"'
-            ids = re.findall(pattern2, html)
-            titles = re.findall(pattern3, html)
-            for i, vid_id in enumerate(ids):
-                if vid_id not in seen_ids and len(vid_id) == 11:
+            chunks = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"(?:[^"]*"[^"]*"){0,30}?"text":"([^"]{3,80})"', html)
+            for vid_id, title in chunks:
+                skip_words = ['واصل', 'حفظ', 'قائمة', 'تشغيل', 'الآن', 'مشترك', 'مشاهدة', 'Enjoy', 'Subscribe', 'Watch', 'playlist']
+                if any(w in title for w in skip_words):
+                    continue
+                if vid_id not in seen_ids:
                     seen_ids.add(vid_id)
-                    title = titles[i] if i < len(titles) else vid_id
                     results.append({'id': vid_id, 'title': title[:60]})
                 if len(results) >= max_results:
                     break
@@ -865,103 +866,79 @@ async def handle_callback(cb):
             title = video_title
             sent = False
 
-            # YouTube Innertube API - متعدد الكلاينتات لأقصى توافق
-            innertube_clients = [
-                {
-                    'name': 'IOS',
-                    'payload': {
-                        'videoId': video_id,
-                        'context': {'client': {
-                            'clientName': 'IOS', 'clientVersion': '19.09.3',
-                            'deviceModel': 'iPhone14,3', 'osName': 'iPhone',
-                            'osVersion': '15.6', 'hl': 'en', 'gl': 'US'
-                        }}
-                    },
-                    'headers': {
-                        'User-Agent': 'com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)',
-                        'Content-Type': 'application/json',
-                        'X-YouTube-Client-Name': '5', 'X-YouTube-Client-Version': '19.09.3'
-                    }
-                },
-                {
-                    'name': 'ANDROID',
-                    'payload': {
-                        'videoId': video_id,
-                        'context': {'client': {
-                            'clientName': 'ANDROID', 'clientVersion': '17.31.35',
-                            'androidSdkVersion': 30, 'hl': 'en', 'gl': 'US'
-                        }}
-                    },
-                    'headers': {
-                        'User-Agent': 'com.google.android.youtube/17.31.35 (Linux; U; Android 11)',
-                        'Content-Type': 'application/json',
-                        'X-YouTube-Client-Name': '3', 'X-YouTube-Client-Version': '17.31.35'
-                    }
-                },
-                {
-                    'name': 'TV',
-                    'payload': {
-                        'videoId': video_id,
-                        'context': {'client': {
-                            'clientName': 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
-                            'clientVersion': '2.0', 'hl': 'en', 'gl': 'US'
-                        }}
-                    },
-                    'headers': {
-                        'User-Agent': 'Mozilla/5.0',
-                        'Content-Type': 'application/json',
-                        'X-YouTube-Client-Name': '85', 'X-YouTube-Client-Version': '2.0'
-                    }
+            async def try_innertube_client(cl_name, cl_version, cl_num, user_agent, extra={}):
+                payload = {'videoId': video_id, 'context': {'client': {
+                    'clientName': cl_name, 'clientVersion': cl_version,
+                    'hl': 'en', 'gl': 'US', **extra
+                }}}
+                hdrs = {
+                    'User-Agent': user_agent, 'Content-Type': 'application/json',
+                    'X-YouTube-Client-Name': str(cl_num),
+                    'X-YouTube-Client-Version': cl_version
                 }
-            ]
-            innertube_url = 'https://www.youtube.com/youtubei/v1/player'
-            innertube_params = {'key': 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8', 'prettyPrint': 'false'}
+                async with session.post(
+                    'https://www.youtube.com/youtubei/v1/player',
+                    json=payload, headers=hdrs,
+                    params={'key': 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8', 'prettyPrint': 'false'},
+                    timeout=aiohttp.ClientTimeout(total=12)
+                ) as resp:
+                    if resp.status != 200:
+                        return None, None
+                    data = await resp.json(content_type=None)
+                sd = data.get('streamingData', {})
+                ttl = data.get('videoDetails', {}).get('title', video_title)[:64]
+                all_fmts = sd.get('adaptiveFormats', []) + sd.get('formats', [])
+                audio_fmts = [
+                    f for f in all_fmts
+                    if f.get('mimeType', '').startswith('audio/') and f.get('url')
+                ]
+                if not audio_fmts:
+                    return None, ttl
+                audio_fmts.sort(key=lambda x: x.get('bitrate', 0))
+                best = audio_fmts[0]
+                return {'url': best['url'], 'mime': best.get('mimeType', 'audio/mp4').split(';')[0], 'title': ttl}, ttl
 
-            for client in innertube_clients:
-                if sent:
-                    break
+            clients = [
+                ('IOS', '19.09.3', 5,
+                 'com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)',
+                 {'deviceModel': 'iPhone14,3', 'osName': 'iPhone', 'osVersion': '15.6'}),
+                ('ANDROID', '17.31.35', 3,
+                 'com.google.android.youtube/17.31.35 (Linux; U; Android 11)',
+                 {'androidSdkVersion': 30}),
+                ('TVHTML5_SIMPLY_EMBEDDED_PLAYER', '2.0', 85, 'Mozilla/5.0', {}),
+            ]
+
+            stream_info = None
+            for cl in clients:
                 try:
-                    async with session.post(
-                        innertube_url, json=client['payload'],
-                        params=innertube_params, headers=client['headers'],
-                        timeout=aiohttp.ClientTimeout(total=15)
-                    ) as resp:
-                        if resp.status != 200:
-                            continue
-                        data = await resp.json(content_type=None)
-                        title = data.get('videoDetails', {}).get('title', video_title)[:64]
-                        formats = data.get('streamingData', {}).get('adaptiveFormats', [])
-                        audio_formats = [
-                            f for f in formats
-                            if f.get('mimeType', '').startswith('audio/') and f.get('url')
-                        ]
-                        audio_formats.sort(key=lambda x: x.get('bitrate', 0))
-                        if not audio_formats:
-                            continue
-                        stream_url = audio_formats[0]['url']
-                        mime = audio_formats[0].get('mimeType', 'audio/mp4').split(';')[0]
-                        ext = 'ogg' if ('webm' in mime or 'opus' in mime) else 'm4a'
-                        async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=90)) as audio_resp:
-                            if audio_resp.status != 200:
-                                continue
-                            audio_data = await audio_resp.read()
-                            if len(audio_data) < 10000:
-                                continue
-                            form = aiohttp.FormData()
-                            form.add_field('chat_id', str(chat_id))
-                            form.add_field('title', title)
-                            form.add_field('performer', 'YouTube')
-                            form.add_field('audio', _io.BytesIO(audio_data), filename=f'{video_id}.{ext}', content_type=mime)
-                            form.add_field('reply_to_message_id', str(msg_id))
-                            async with session.post(f'{API}/sendAudio', data=form) as sr:
-                                sr_json = await sr.json(content_type=None)
-                                if sr_json.get('ok'):
-                                    if wait_msg:
-                                        await delete(chat_id, wait_msg['message_id'])
-                                    sent = True
-                                    break
+                    stream_info, ttl = await try_innertube_client(*cl)
+                    if stream_info:
+                        title = stream_info['title']
+                        break
                 except Exception as e:
-                    print(f'Innertube [{client["name"]}] error: {e}')
+                    print(f'Innertube {cl[0]} error: {e}')
+
+            if stream_info:
+                try:
+                    mime = stream_info['mime']
+                    ext = 'ogg' if ('webm' in mime or 'opus' in mime) else 'm4a'
+                    async with session.get(stream_info['url'], timeout=aiohttp.ClientTimeout(total=90)) as audio_resp:
+                        if audio_resp.status == 200:
+                            audio_data = await audio_resp.read()
+                            if len(audio_data) > 10000:
+                                form = aiohttp.FormData()
+                                form.add_field('chat_id', str(chat_id))
+                                form.add_field('title', title)
+                                form.add_field('performer', 'YouTube')
+                                form.add_field('audio', _io.BytesIO(audio_data), filename=f'{video_id}.{ext}', content_type=mime)
+                                form.add_field('reply_to_message_id', str(msg_id))
+                                async with session.post(f'{API}/sendAudio', data=form) as sr:
+                                    if (await sr.json(content_type=None)).get('ok'):
+                                        if wait_msg:
+                                            await delete(chat_id, wait_msg['message_id'])
+                                        sent = True
+                except Exception as e:
+                    print(f'Audio stream error: {e}')
 
             if not sent:
                 yt_link = f'https://www.youtube.com/watch?v={video_id}'
