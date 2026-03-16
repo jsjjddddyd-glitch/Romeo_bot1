@@ -83,6 +83,8 @@ def get_settings(data, chat_id):
         'clean_numbers': False,
         'clean_clutter': False,
         'clean_edited': False,
+        'youtube_enabled': True,
+        'locked_commands': {},
     }
     for k, v in defaults.items():
         if k not in s:
@@ -129,6 +131,22 @@ RANKS = {'عضو': 0, 'مميز': 1, 'ادمن': 2, 'أدمن': 2, 'مدير': 3
 
 def rank_level(r):
     return RANKS.get(r, 0)
+
+# ===========================
+# CUSTOM COMMAND ALIASES
+# ===========================
+
+def get_custom_commands(data, chat_id):
+    cid = str(chat_id)
+    if 'custom_commands' not in data:
+        data['custom_commands'] = {}
+    if cid not in data['custom_commands']:
+        data['custom_commands'][cid] = {}
+    return data['custom_commands'][cid]
+
+def resolve_command(data, chat_id, text):
+    aliases = get_custom_commands(data, chat_id)
+    return aliases.get(text, text)
 
 # ===========================
 # GAME HELPERS
@@ -351,6 +369,76 @@ async def check_image_nsfw(file_id):
         return False, None
 
 # ===========================
+# YOUTUBE SEARCH & DOWNLOAD
+# ===========================
+
+youtube_pending = {}
+
+async def youtube_search(query, max_results=4):
+    try:
+        session = await get_session()
+        search_url = 'https://www.youtube.com/results'
+        params = {'search_query': query}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        async with session.get(search_url, params=params, headers=headers) as resp:
+            if resp.status != 200:
+                return []
+            html = await resp.text()
+        pattern = r'"videoId":"([^"]+)","thumbnail".*?"title":{"runs":\[{"text":"([^"]+)"'
+        matches = re.findall(pattern, html)
+        results = []
+        seen_ids = set()
+        for vid_id, title in matches:
+            if vid_id not in seen_ids:
+                seen_ids.add(vid_id)
+                results.append({'id': vid_id, 'title': title[:60]})
+            if len(results) >= max_results:
+                break
+        return results
+    except Exception as e:
+        print(f'YouTube search error: {e}')
+        return []
+
+async def download_youtube_audio(video_id):
+    try:
+        session = await get_session()
+        api_url = f'https://api.vevioz.com/api/button/mp3/{video_id}'
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        async with session.get(api_url, headers=headers, allow_redirects=True) as resp:
+            if resp.status == 200:
+                content = await resp.read()
+                if len(content) > 10000:
+                    return content, 'audio/mpeg'
+        api2_url = f'https://api.fabdl.com/youtube/mp3?url=https://www.youtube.com/watch?v={video_id}'
+        async with session.get(api2_url, headers=headers) as resp2:
+            if resp2.status == 200:
+                result = await resp2.json()
+                dl_url = result.get('result', {}).get('download_url') or result.get('dl_url')
+                if dl_url:
+                    async with session.get(dl_url, headers=headers) as resp3:
+                        if resp3.status == 200:
+                            content = await resp3.read()
+                            if len(content) > 10000:
+                                return content, 'audio/mpeg'
+        return None, None
+    except Exception as e:
+        print(f'YouTube download error: {e}')
+        return None, None
+
+async def send_youtube_results(chat_id, msg_id, query, results):
+    buttons = []
+    for r in results:
+        buttons.append([{'text': r['title'], 'callback_data': f'yt_dl:{r["id"]}'}])
+    keyboard = {'inline_keyboard': buttons}
+    await api_call('sendMessage', {
+        'chat_id': chat_id,
+        'text': f'🔍 نتائج البحث ‹‹ {query}',
+        'reply_to_message_id': msg_id,
+        'reply_markup': keyboard,
+        'parse_mode': 'HTML'
+    })
+
+# ===========================
 # USER INFO - ACCOUNT CREATION
 # ===========================
 
@@ -526,7 +614,10 @@ menu_texts = {
         '• <b>رتبة / رتب</b> - رتبتك\n'
         '• <b>رتبة</b> (رد) - رتبة الشخص المردود عليه\n'
         '• <b>رتبته</b> (رد) - رتبة شخص\n'
-        '• <b>انشاء</b> - تاريخ إنشاء الحساب'
+        '• <b>انشاء</b> - تاريخ إنشاء الحساب\n\n'
+        '🎵 <b>اليوتيوب:</b>\n'
+        '• <b>يوت [اسم الأغنية]</b> - البحث عن أغنية وإرسالها\n'
+        '• تعطيل اليوتيوب | تفعيل اليوتيوب'
     ),
     'menu_fun': (
         '🎉 <b>أوامر التسليه:</b>\n\n'
@@ -554,7 +645,10 @@ menu_texts = {
         '• رفع مدير / تنزيل مدير\n'
         '• رفع ادمن / تنزيل ادمن\n'
         '• رفع مميز / تنزيل مميز\n\n'
-        '🔴 كتم | تقييد | طرد | رفع القيود | مسح'
+        '🔴 كتم | تقييد | طرد | رفع القيود | مسح\n\n'
+        '⚙️ <b>إعدادات الأوامر:</b>\n'
+        '• <b>قفل امر</b> - قفل أمر لرتبة معينة فقط\n'
+        '• <b>اضف امر</b> - إضافة اسم بديل لأمر موجود'
     ),
     'menu_games': (
         '🎮 <b>أوامر الألعاب:</b>\n\n'
@@ -736,6 +830,88 @@ async def handle_callback(cb):
         await edit_msg(chat_id, msg_id, '📋 <b>المجموعات المسجلة:</b>\n\nاختر المجموعة:', keyboard)
         return
 
+    if data_cb.startswith('yt_dl:'):
+        video_id = data_cb.split(':', 1)[1]
+        key = f'{chat_id}:{video_id}'
+        video_title = youtube_pending.get(key, video_id)
+        await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '⏳ يتم التحميل...', 'show_alert': False})
+        wait_msg = await api_call('sendMessage', {
+            'chat_id': chat_id,
+            'text': '⏳ يتم التحميل...',
+            'reply_to_message_id': msg_id
+        })
+        try:
+            session = await get_session()
+            yt_url = f'https://www.youtube.com/watch?v={video_id}'
+            api_url = f'https://api.fabdl.com/youtube/mp3?url={yt_url}'
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            dl_url = None
+            title = video_title
+            async with session.get(api_url, headers=headers) as resp:
+                if resp.status == 200:
+                    rjson = await resp.json()
+                    res = rjson.get('result', rjson)
+                    dl_url = res.get('download_url') or res.get('dl_url') or res.get('url')
+                    title = res.get('title', video_title)
+            if not dl_url:
+                api_url2 = f'https://api.vevioz.com/api/button/mp3/{video_id}'
+                async with session.get(api_url2, headers=headers, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=30)) as resp2:
+                    if resp2.status == 200 and 'audio' in resp2.headers.get('Content-Type', ''):
+                        audio_data = await resp2.read()
+                        if len(audio_data) > 50000:
+                            import io
+                            form = aiohttp.FormData()
+                            form.add_field('chat_id', str(chat_id))
+                            form.add_field('title', title[:64])
+                            form.add_field('performer', 'YouTube')
+                            form.add_field('audio', io.BytesIO(audio_data), filename=f'{video_id}.mp3', content_type='audio/mpeg')
+                            form.add_field('reply_to_message_id', str(msg_id))
+                            async with session.post(f'{API}/sendAudio', data=form) as send_resp:
+                                pass
+                            if wait_msg:
+                                await delete(chat_id, wait_msg['message_id'])
+                            return
+            if dl_url:
+                await api_call('sendAudio', {
+                    'chat_id': chat_id,
+                    'audio': dl_url,
+                    'title': title[:64],
+                    'performer': 'YouTube',
+                    'reply_to_message_id': msg_id
+                })
+                if wait_msg:
+                    await delete(chat_id, wait_msg['message_id'])
+            else:
+                yt_link = f'https://www.youtube.com/watch?v={video_id}'
+                if wait_msg:
+                    await edit_msg(chat_id, wait_msg['message_id'],
+                        f'⚠️ تعذر التحميل المباشر\n\n🎵 {title}\n🔗 <a href="{yt_link}">فتح في يوتيوب</a>')
+        except Exception as e:
+            print(f'YT download error: {e}')
+            if wait_msg:
+                await edit_msg(chat_id, wait_msg['message_id'], '❌ حدث خطأ أثناء التحميل')
+        return
+
+    if data_cb.startswith('lock_cmd_rank:'):
+        parts = data_cb.split(':', 2)
+        cmd_name = parts[1]
+        rank_choice = parts[2]
+        data = load_data()
+        settings = get_settings(data, chat_id)
+        if 'locked_commands' not in settings:
+            settings['locked_commands'] = {}
+        settings['locked_commands'][cmd_name] = rank_choice
+        save_data(data)
+        state = load_state()
+        cid_str = str(chat_id)
+        uid_str = str(user_id)
+        if cid_str in state and uid_str in state[cid_str]:
+            del state[cid_str][uid_str]
+            save_state(state)
+        await edit_msg(chat_id, msg_id,
+            f'✅ تم قفل امر <b>{cmd_name}</b> للرتبة <b>{rank_choice}</b> فقط\nولا يمكن استعمال هذه الميزه للرتب اقل من <b>{rank_choice}</b>')
+        return
+
 # ===========================
 # MESSAGE HANDLER
 # ===========================
@@ -877,9 +1053,22 @@ async def handle_edited_message(msg):
     if settings.get('clean_auto') and settings.get('clean_edited'):
         add_to_clean_queue(chat_id, msg_id, 'edited')
     elif settings.get('lock_media_edit'):
-        await delete(chat_id, msg_id)
-        m = mention(from_)
-        await send(chat_id, f'⚠️ {m}\nممنوع تعديل الرسائل هنا', {'reply_to_message_id': msg_id})
+        has_photo = bool(msg.get('photo'))
+        has_media = has_photo or bool(msg.get('video')) or bool(msg.get('document')) or bool(msg.get('animation'))
+        if has_media:
+            await delete(chat_id, msg_id)
+            m = mention(from_)
+            chat_info = await get_chat(chat_id)
+            owner_username = None
+            admins = await api_call('getChatAdministrators', {'chat_id': chat_id})
+            if admins:
+                owner = next((a for a in admins if a.get('status') == 'creator'), None)
+                if owner:
+                    owner_username = owner['user'].get('username') or name(owner['user'])
+            owner_tag = f'@{owner_username}' if owner_username else 'المالك'
+            await send(chat_id,
+                f'⚠️ {m}\nممنوع تعديل الصور والميديا هنا\n\n{owner_tag}',
+                {'reply_to_message_id': msg_id})
 
 # ===========================
 # BOT ADDED AS ADMIN HANDLER
@@ -1031,11 +1220,45 @@ async def media_mod(msg, data, settings):
         return
 
     if msg.get('sticker'):
-        if msg['sticker'].get('is_animated') and settings['lock_animated']:
+        sticker = msg['sticker']
+        is_animated = sticker.get('is_animated') or sticker.get('is_video')
+
+        if settings.get('lock_nsfw') or settings.get('lock_nsfw_restrict') or settings.get('lock_nsfw_warn'):
+            sticker_file_id = sticker.get('thumbnail', {}).get('file_id') if sticker.get('thumbnail') else None
+            if not sticker_file_id:
+                sticker_file_id = sticker.get('file_id')
+            if sticker_file_id and not is_animated:
+                is_violation, violation_type = await check_image_nsfw(sticker_file_id)
+                if is_violation:
+                    await delete(chat_id, msg_id)
+                    if settings.get('lock_nsfw_restrict'):
+                        await restrict(chat_id, user_id, {
+                            'can_send_messages': False, 'can_send_media_messages': False,
+                            'can_send_polls': False, 'can_send_other_messages': False,
+                            'can_add_web_page_previews': False
+                        })
+                        await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف وتقييد العضو</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>')
+                    elif settings.get('lock_nsfw_warn'):
+                        warns = add_warning(data, chat_id, user_id)
+                        if warns >= 5:
+                            reset_warnings(data, chat_id, user_id)
+                            await restrict(chat_id, user_id, {
+                                'can_send_messages': False, 'can_send_media_messages': False,
+                                'can_send_polls': False, 'can_send_other_messages': False,
+                                'can_add_web_page_previews': False
+                            })
+                            await send(chat_id, f'🚫 <b>تم تقييد {m}</b>\n\nوصل عدد التحذيرات إلى 5 بسبب إرسال ملصق مخالف')
+                        else:
+                            await send(chat_id, f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\nنوع المخالفة: <b>{violation_type}</b>')
+                    else:
+                        await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>')
+                    return
+
+        if is_animated and settings['lock_animated']:
             await delete(chat_id, msg_id)
             await send(chat_id, f'⚠️ {m} ممنوع الملصقات المتحركة هنا', reply)
             return
-        if not msg['sticker'].get('is_animated') and settings['lock_stickers']:
+        if not is_animated and settings['lock_stickers']:
             await delete(chat_id, msg_id)
             await send(chat_id, f'⚠️ {m} ممنوع الملصقات هنا', reply)
             return
@@ -1126,6 +1349,22 @@ async def process_cmd(msg, data, state, text, settings):
     m = mention(from_)
     cid = str(chat_id)
     reply = {'reply_to_message_id': msg_id}
+
+    aliases = get_custom_commands(data, chat_id)
+    if text in aliases:
+        text = aliases[text]
+
+    user_rank = get_rank(data, chat_id, user_id)
+    tg_admin = await is_tg_admin(chat_id, user_id)
+    if rank_level(user_rank) < rank_level('ادمن') and not tg_admin:
+        return
+
+    locked_cmds = settings.get('locked_commands', {})
+    if text in locked_cmds:
+        required_rank = locked_cmds[text]
+        if rank_level(user_rank) < rank_level(required_rank) and not tg_admin:
+            await send(chat_id, f'⛔ هذا الأمر مخصص لرتبة <b>{required_rank}</b> فقط', reply)
+            return
 
     # ردود تلقائية
     if not settings.get('disable_auto_replies'):
@@ -1271,6 +1510,27 @@ async def process_cmd(msg, data, state, text, settings):
                 await send(chat_id, f'🗓️ تاريخ إنشاء حسابك:\n{creation}', reply)
             return
 
+        yt_match = re.match(r'^يوت\s+(.+)$', text)
+        if yt_match and settings.get('youtube_enabled', True):
+            query = yt_match.group(1).strip()
+            search_msg = await api_call('sendMessage', {
+                'chat_id': chat_id,
+                'text': f'🔍 جاري البحث عن: <b>{query}</b>',
+                'reply_to_message_id': msg_id,
+                'parse_mode': 'HTML'
+            })
+            results = await youtube_search(query, max_results=4)
+            if search_msg:
+                await delete(chat_id, search_msg['message_id'])
+            if not results:
+                await send(chat_id, f'❌ لم أجد نتائج لـ: <b>{query}</b>', reply)
+                return
+            for r in results:
+                key = f'{chat_id}:{r["id"]}'
+                youtube_pending[key] = r['title']
+            await send_youtube_results(chat_id, msg_id, query, results)
+            return
+
     # ===========================
     # أوامر الرتب (تُفحص قبل التسلية)
     # ===========================
@@ -1285,14 +1545,20 @@ async def process_cmd(msg, data, state, text, settings):
         if not msg.get('reply_to_message'):
             await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
             return
-        if not (await is_owner_up(data, chat_id, user_id)):
-            await send(chat_id, '⛔ ليس لديك صلاحية', reply)
-            return
         tf = msg['reply_to_message']['from']
-        set_rank(data, chat_id, tf['id'], rank_cmds[text])
+        target_rank = rank_cmds[text]
         is_up = text.startswith('رفع')
+        if target_rank == 'مالك أساسي':
+            if not await is_group_creator(chat_id, user_id):
+                await send(chat_id, '⛔ رفع مالك أساسي للمالك الأصلي للمجموعة فقط', reply)
+                return
+        else:
+            if not (await is_master(data, chat_id, user_id)):
+                await send(chat_id, '⛔ ليس لديك صلاحية', reply)
+                return
+        set_rank(data, chat_id, tf['id'], target_rank)
         if is_up:
-            await send(chat_id, f'✅ تم رفع {mention(tf)} إلى رتبة <b>{rank_cmds[text]}</b>\nبواسطة {m}', reply)
+            await send(chat_id, f'✅ تم رفع {mention(tf)} إلى رتبة <b>{target_rank}</b>\nبواسطة {m}', reply)
         else:
             await send(chat_id, f'✅ تم تنزيل {mention(tf)}\nبواسطة {m}', reply)
         return
@@ -1302,7 +1568,8 @@ async def process_cmd(msg, data, state, text, settings):
     # ===========================
     if not settings['disable_fun']:
         fun_match = re.match(r'^رفع\s+(.+)$', text)
-        if fun_match and msg.get('reply_to_message'):
+        fun_rank_keywords = ['مالك', 'ادمن', 'مدير', 'مميز', 'القيود', 'كتم', 'تقييد']
+        if fun_match and msg.get('reply_to_message') and fun_match.group(1).strip() not in fun_rank_keywords:
             await send(chat_id, f'✅ تم رفع {mention(msg["reply_to_message"]["from"])} {fun_match.group(1).strip()} للتسلية 😜', reply)
             return
 
@@ -1405,11 +1672,29 @@ async def process_cmd(msg, data, state, text, settings):
             'تعطيل الردود التلقائية': ['disable_auto_replies', True], 'تفعيل الردود التلقائية': ['disable_auto_replies', False],
             'تعطيل الردود التلقائيه': ['disable_auto_replies', True], 'تفعيل الردود التلقائيه': ['disable_auto_replies', False],
             'تعطيل الالعاب': ['disable_games', True], 'تفعيل الالعاب': ['disable_games', False],
+            'تعطيل اليوتيوب': ['youtube_enabled', False], 'تفعيل اليوتيوب': ['youtube_enabled', True],
+            'تعطيل اليوتويب': ['youtube_enabled', False], 'تفعيل اليوتويب': ['youtube_enabled', True],
         }
         if text in dis_map:
             key, val = dis_map[text]
             data['group_settings'][cid][key] = val
-            await send(chat_id, f'{"🔴 تم التعطيل" if val else "🟢 تم التفعيل"}: <b>{text}</b>', reply)
+            save_data(data)
+            if key == 'youtube_enabled':
+                await send(chat_id, f'{"🔴 تم تعطيل ميزة اليوتيوب" if not val else "🟢 تم تفعيل ميزة اليوتيوب"}', reply)
+            else:
+                await send(chat_id, f'{"🔴 تم التعطيل" if val else "🟢 تم التفعيل"}: <b>{text}</b>', reply)
+            return
+
+        if text == 'قفل امر' and await is_owner_up(data, chat_id, user_id):
+            if cid not in state: state[cid] = {}
+            state[cid][str(user_id)] = {'step': 'await_lock_cmd_name'}
+            await send(chat_id, '🔒 أرسل اسم الأمر الذي تريد قفله:', reply)
+            return
+
+        if text == 'اضف امر' and await is_owner_up(data, chat_id, user_id):
+            if cid not in state: state[cid] = {}
+            state[cid][str(user_id)] = {'step': 'await_add_cmd_real'}
+            await send(chat_id, '📝 أرسل الأمر الحقيقي:', reply)
             return
 
     # ===========================
@@ -1891,6 +2176,43 @@ async def handle_state(msg, data, state, user_state, text):
         else:
             await send(chat_id, f'⚠️ لم أجد ردًا باسم <b>{text}</b>', reply)
         del state[cid][uid]
+
+    elif user_state['step'] == 'await_lock_cmd_name':
+        if not text:
+            await send(chat_id, '⚠️ أرسل اسم الأمر:', reply)
+            return
+        state[cid][uid] = {'step': 'await_lock_cmd_rank', 'cmd_name': text}
+        rank_buttons = [
+            [{'text': '1 - مالك أساسي', 'callback_data': f'lock_cmd_rank:{text}:مالك أساسي'}],
+            [{'text': '2 - مالك', 'callback_data': f'lock_cmd_rank:{text}:مالك'}],
+            [{'text': '3 - مدير', 'callback_data': f'lock_cmd_rank:{text}:مدير'}],
+            [{'text': '4 - ادمن', 'callback_data': f'lock_cmd_rank:{text}:ادمن'}],
+            [{'text': '5 - مميز', 'callback_data': f'lock_cmd_rank:{text}:مميز'}],
+        ]
+        await send(chat_id,
+            f'‹ حسناً عزيزي اختار نوع الرتبة :\n\n'
+            f'- سيتم وضع امر ‹ <b>{text}</b> ‹ له بس',
+            {'reply_markup': {'inline_keyboard': rank_buttons}, 'reply_to_message_id': msg_id})
+
+    elif user_state['step'] == 'await_add_cmd_real':
+        if not text:
+            await send(chat_id, '⚠️ أرسل الأمر الحقيقي:', reply)
+            return
+        state[cid][uid] = {'step': 'await_add_cmd_alias', 'real_cmd': text}
+        await send(chat_id, f'✏️ أرسل الأمر المراد إضافته (الاسم البديل):', reply)
+
+    elif user_state['step'] == 'await_add_cmd_alias':
+        real_cmd = user_state.get('real_cmd', '')
+        if not text:
+            await send(chat_id, '⚠️ أرسل الاسم البديل للأمر:', reply)
+            return
+        if 'custom_commands' not in data:
+            data['custom_commands'] = {}
+        if cid not in data['custom_commands']:
+            data['custom_commands'][cid] = {}
+        data['custom_commands'][cid][text] = real_cmd
+        del state[cid][uid]
+        await send(chat_id, f'✅ تم حفظ الامر <b>{real_cmd}</b> بامر <b>{text}</b> بنجاح', reply)
 
 # ===========================
 # HTTP SERVER
