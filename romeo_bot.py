@@ -377,42 +377,59 @@ youtube_pending = {}
 async def youtube_search(query, max_results=4):
     try:
         session = await get_session()
-        search_url = 'https://www.youtube.com/results'
-        params = {'search_query': query, 'sp': 'EgIQAQ%3D%3D'}  # فلتر فيديوهات فقط
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9'
+        # استخدام Innertube Search API مباشرة - أكثر موثوقية من scraping
+        payload = {
+            'query': query,
+            'params': 'EgIQAQ==',  # فيديوهات فقط
+            'context': {'client': {
+                'clientName': 'WEB',
+                'clientVersion': '2.20231219.01.00',
+                'hl': 'ar', 'gl': 'SA'
+            }}
         }
-        async with session.get(search_url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Content-Type': 'application/json',
+            'X-YouTube-Client-Name': '1',
+            'X-YouTube-Client-Version': '2.20231219.01.00'
+        }
+        async with session.post(
+            'https://www.youtube.com/youtubei/v1/search',
+            json=payload, headers=headers,
+            params={'key': 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8', 'prettyPrint': 'false'},
+            timeout=aiohttp.ClientTimeout(total=15)
+        ) as resp:
             if resp.status != 200:
                 return []
-            html = await resp.text()
+            data = await resp.json(content_type=None)
 
         results = []
         seen_ids = set()
 
-        # استخراج من videoRenderer فقط (نتائج حقيقية)
-        renderer_pattern = r'"videoRenderer":\{"videoId":"([a-zA-Z0-9_-]{11})"[^{]*?"title":\{"runs":\[\{"text":"([^"]+)"'
-        for vid_id, title in re.findall(renderer_pattern, html, re.DOTALL):
-            if vid_id not in seen_ids:
-                seen_ids.add(vid_id)
-                results.append({'id': vid_id, 'title': title[:60]})
+        def extract_videos(obj):
             if len(results) >= max_results:
-                break
+                return
+            if isinstance(obj, dict):
+                if 'videoRenderer' in obj:
+                    vr = obj['videoRenderer']
+                    vid_id = vr.get('videoId', '')
+                    runs = vr.get('title', {}).get('runs', [])
+                    title = runs[0].get('text', '') if runs else ''
+                    if vid_id and title and vid_id not in seen_ids and len(vid_id) == 11:
+                        seen_ids.add(vid_id)
+                        results.append({'id': vid_id, 'title': title[:60]})
+                else:
+                    for v in obj.values():
+                        extract_videos(v)
+                        if len(results) >= max_results:
+                            return
+            elif isinstance(obj, list):
+                for item in obj:
+                    extract_videos(item)
+                    if len(results) >= max_results:
+                        return
 
-        # fallback: استخراج أزواج videoId+title من نفس السياق
-        if not results:
-            chunks = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"(?:[^"]*"[^"]*"){0,30}?"text":"([^"]{3,80})"', html)
-            for vid_id, title in chunks:
-                skip_words = ['واصل', 'حفظ', 'قائمة', 'تشغيل', 'الآن', 'مشترك', 'مشاهدة', 'Enjoy', 'Subscribe', 'Watch', 'playlist']
-                if any(w in title for w in skip_words):
-                    continue
-                if vid_id not in seen_ids:
-                    seen_ids.add(vid_id)
-                    results.append({'id': vid_id, 'title': title[:60]})
-                if len(results) >= max_results:
-                    break
-
+        extract_videos(data)
         return results
     except Exception as e:
         print(f'YouTube search error: {e}')
