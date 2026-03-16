@@ -377,59 +377,41 @@ youtube_pending = {}
 async def youtube_search(query, max_results=4):
     try:
         session = await get_session()
-        # استخدام Innertube Search API مباشرة - أكثر موثوقية من scraping
-        payload = {
-            'query': query,
-            'params': 'EgIQAQ==',  # فيديوهات فقط
-            'context': {'client': {
-                'clientName': 'WEB',
-                'clientVersion': '2.20231219.01.00',
-                'hl': 'ar', 'gl': 'SA'
-            }}
-        }
+        search_url = 'https://www.youtube.com/results'
+        params = {'search_query': query}
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Content-Type': 'application/json',
-            'X-YouTube-Client-Name': '1',
-            'X-YouTube-Client-Version': '2.20231219.01.00'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'ar,en;q=0.9'
         }
-        async with session.post(
-            'https://www.youtube.com/youtubei/v1/search',
-            json=payload, headers=headers,
-            params={'key': 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8', 'prettyPrint': 'false'},
-            timeout=aiohttp.ClientTimeout(total=15)
-        ) as resp:
+        async with session.get(search_url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status != 200:
                 return []
-            data = await resp.json(content_type=None)
+            html = await resp.text()
 
         results = []
         seen_ids = set()
 
-        def extract_videos(obj):
+        pattern1 = r'"videoId":"([a-zA-Z0-9_-]{11})"[^}]*?"title":\{"runs":\[\{"text":"([^"]+)"'
+        for vid_id, title in re.findall(pattern1, html):
+            if vid_id not in seen_ids and len(vid_id) == 11:
+                seen_ids.add(vid_id)
+                results.append({'id': vid_id, 'title': title[:60]})
             if len(results) >= max_results:
-                return
-            if isinstance(obj, dict):
-                if 'videoRenderer' in obj:
-                    vr = obj['videoRenderer']
-                    vid_id = vr.get('videoId', '')
-                    runs = vr.get('title', {}).get('runs', [])
-                    title = runs[0].get('text', '') if runs else ''
-                    if vid_id and title and vid_id not in seen_ids and len(vid_id) == 11:
-                        seen_ids.add(vid_id)
-                        results.append({'id': vid_id, 'title': title[:60]})
-                else:
-                    for v in obj.values():
-                        extract_videos(v)
-                        if len(results) >= max_results:
-                            return
-            elif isinstance(obj, list):
-                for item in obj:
-                    extract_videos(item)
-                    if len(results) >= max_results:
-                        return
+                break
 
-        extract_videos(data)
+        if not results:
+            pattern2 = r'"videoId":"([a-zA-Z0-9_-]{11})"'
+            pattern3 = r'"text":"([^"]{5,80})"'
+            ids = re.findall(pattern2, html)
+            titles = re.findall(pattern3, html)
+            for i, vid_id in enumerate(ids):
+                if vid_id not in seen_ids and len(vid_id) == 11:
+                    seen_ids.add(vid_id)
+                    title = titles[i] if i < len(titles) else vid_id
+                    results.append({'id': vid_id, 'title': title[:60]})
+                if len(results) >= max_results:
+                    break
+
         return results
     except Exception as e:
         print(f'YouTube search error: {e}')
@@ -882,80 +864,85 @@ async def handle_callback(cb):
             yt_url = f'https://www.youtube.com/watch?v={video_id}'
             title = video_title
             sent = False
+            headers = {'User-Agent': 'Mozilla/5.0'}
 
-            async def try_innertube_client(cl_name, cl_version, cl_num, user_agent, extra={}):
-                payload = {'videoId': video_id, 'context': {'client': {
-                    'clientName': cl_name, 'clientVersion': cl_version,
-                    'hl': 'en', 'gl': 'US', **extra
-                }}}
-                hdrs = {
-                    'User-Agent': user_agent, 'Content-Type': 'application/json',
-                    'X-YouTube-Client-Name': str(cl_num),
-                    'X-YouTube-Client-Version': cl_version
-                }
-                async with session.post(
-                    'https://www.youtube.com/youtubei/v1/player',
-                    json=payload, headers=hdrs,
-                    params={'key': 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8', 'prettyPrint': 'false'},
-                    timeout=aiohttp.ClientTimeout(total=12)
-                ) as resp:
-                    if resp.status != 200:
-                        return None, None
-                    data = await resp.json(content_type=None)
-                sd = data.get('streamingData', {})
-                ttl = data.get('videoDetails', {}).get('title', video_title)[:64]
-                all_fmts = sd.get('adaptiveFormats', []) + sd.get('formats', [])
-                audio_fmts = [
-                    f for f in all_fmts
-                    if f.get('mimeType', '').startswith('audio/') and f.get('url')
-                ]
-                if not audio_fmts:
-                    return None, ttl
-                audio_fmts.sort(key=lambda x: x.get('bitrate', 0))
-                best = audio_fmts[0]
-                return {'url': best['url'], 'mime': best.get('mimeType', 'audio/mp4').split(';')[0], 'title': ttl}, ttl
+            # loader.to - يعمل على السيرفرات السحابية
+            try:
+                async with session.get(
+                    'https://loader.to/ajax/download.php',
+                    params={'format': 'mp3', 'url': yt_url},
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as r1:
+                    rj1 = await r1.json(content_type=None)
+                    task_id = rj1.get('id') if rj1.get('success') else None
 
-            clients = [
-                ('IOS', '19.09.3', 5,
-                 'com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)',
-                 {'deviceModel': 'iPhone14,3', 'osName': 'iPhone', 'osVersion': '15.6'}),
-                ('ANDROID', '17.31.35', 3,
-                 'com.google.android.youtube/17.31.35 (Linux; U; Android 11)',
-                 {'androidSdkVersion': 30}),
-                ('TVHTML5_SIMPLY_EMBEDDED_PLAYER', '2.0', 85, 'Mozilla/5.0', {}),
-            ]
+                if task_id:
+                    dl_url = None
+                    for _ in range(30):
+                        await asyncio.sleep(3)
+                        async with session.get(
+                            'https://loader.to/ajax/progress.php',
+                            params={'id': task_id},
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=10)
+                        ) as r2:
+                            rj2 = await r2.json(content_type=None)
+                            progress = rj2.get('progress', 0)
+                            if rj2.get('success') and int(progress) >= 100:
+                                dl_url = rj2.get('download_url')
+                                break
+                            if rj2.get('success') is False:
+                                break
 
-            stream_info = None
-            for cl in clients:
+                    if dl_url:
+                        async with session.get(dl_url, headers=headers, timeout=aiohttp.ClientTimeout(total=90)) as ra:
+                            if ra.status == 200:
+                                audio_data = await ra.read()
+                                if len(audio_data) > 10000:
+                                    form = aiohttp.FormData()
+                                    form.add_field('chat_id', str(chat_id))
+                                    form.add_field('title', title[:64])
+                                    form.add_field('performer', 'YouTube')
+                                    form.add_field('audio', _io.BytesIO(audio_data), filename=f'{video_id}.mp3', content_type='audio/mpeg')
+                                    form.add_field('reply_to_message_id', str(msg_id))
+                                    async with session.post(f'{API}/sendAudio', data=form) as sr:
+                                        pass
+                                    if wait_msg:
+                                        await delete(chat_id, wait_msg['message_id'])
+                                    sent = True
+            except Exception as e:
+                print(f'loader.to error: {e}')
+
+            # إذا فشل loader.to جرب soundloaders
+            if not sent:
                 try:
-                    stream_info, ttl = await try_innertube_client(*cl)
-                    if stream_info:
-                        title = stream_info['title']
-                        break
+                    async with session.get(
+                        f'https://api.soundloaders.com/youtube-dl?url={yt_url}&format=mp3',
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=30)
+                    ) as r3:
+                        if r3.status == 200:
+                            rj3 = await r3.json(content_type=None)
+                            dl_url2 = rj3.get('url') or rj3.get('download_url')
+                            if dl_url2:
+                                async with session.get(dl_url2, headers=headers, timeout=aiohttp.ClientTimeout(total=90)) as ra2:
+                                    if ra2.status == 200:
+                                        audio_data2 = await ra2.read()
+                                        if len(audio_data2) > 10000:
+                                            form2 = aiohttp.FormData()
+                                            form2.add_field('chat_id', str(chat_id))
+                                            form2.add_field('title', title[:64])
+                                            form2.add_field('performer', 'YouTube')
+                                            form2.add_field('audio', _io.BytesIO(audio_data2), filename=f'{video_id}.mp3', content_type='audio/mpeg')
+                                            form2.add_field('reply_to_message_id', str(msg_id))
+                                            async with session.post(f'{API}/sendAudio', data=form2) as sr2:
+                                                pass
+                                            if wait_msg:
+                                                await delete(chat_id, wait_msg['message_id'])
+                                            sent = True
                 except Exception as e:
-                    print(f'Innertube {cl[0]} error: {e}')
-
-            if stream_info:
-                try:
-                    mime = stream_info['mime']
-                    ext = 'ogg' if ('webm' in mime or 'opus' in mime) else 'm4a'
-                    async with session.get(stream_info['url'], timeout=aiohttp.ClientTimeout(total=90)) as audio_resp:
-                        if audio_resp.status == 200:
-                            audio_data = await audio_resp.read()
-                            if len(audio_data) > 10000:
-                                form = aiohttp.FormData()
-                                form.add_field('chat_id', str(chat_id))
-                                form.add_field('title', title)
-                                form.add_field('performer', 'YouTube')
-                                form.add_field('audio', _io.BytesIO(audio_data), filename=f'{video_id}.{ext}', content_type=mime)
-                                form.add_field('reply_to_message_id', str(msg_id))
-                                async with session.post(f'{API}/sendAudio', data=form) as sr:
-                                    if (await sr.json(content_type=None)).get('ok'):
-                                        if wait_msg:
-                                            await delete(chat_id, wait_msg['message_id'])
-                                        sent = True
-                except Exception as e:
-                    print(f'Audio stream error: {e}')
+                    print(f'soundloaders error: {e}')
 
             if not sent:
                 yt_link = f'https://www.youtube.com/watch?v={video_id}'
