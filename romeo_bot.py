@@ -1214,7 +1214,7 @@ async def media_mod(msg, data, settings):
                     f'👤 المرسل: {m}\n'
                     f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
                     f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
-                ))
+                ), reply)
                 return
 
         if settings.get('lock_nsfw_warn'):
@@ -1233,13 +1233,13 @@ async def media_mod(msg, data, settings):
                         f'🚫 <b>تم تقييد {m}</b>\n\n'
                         f'وصل عدد التحذيرات إلى 5 بسبب إرسال محتوى مخالف\n'
                         f'⚠️ نوع المخالفة: <b>{violation_type}</b>'
-                    ))
+                    ), reply)
                 else:
                     await send(chat_id, (
                         f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\n'
                         f'نوع المخالفة: <b>{violation_type}</b>\n'
                         f'عند الوصول لـ 5 تحذيرات سيتم تقييدك ❌'
-                    ))
+                    ), reply)
                 return
 
         if settings.get('lock_nsfw', False):
@@ -1251,7 +1251,7 @@ async def media_mod(msg, data, settings):
                     f'👤 المرسل: {m}\n'
                     f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
                     f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
-                ))
+                ), reply)
                 return
 
         if settings['lock_photos']:
@@ -1300,7 +1300,7 @@ async def media_mod(msg, data, settings):
                             'can_send_polls': False, 'can_send_other_messages': False,
                             'can_add_web_page_previews': False
                         })
-                        await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف وتقييد العضو</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>')
+                        await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف وتقييد العضو</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>', reply)
                     elif settings.get('lock_nsfw_warn'):
                         warns = add_warning(data, chat_id, user_id)
                         if warns >= 5:
@@ -1310,11 +1310,11 @@ async def media_mod(msg, data, settings):
                                 'can_send_polls': False, 'can_send_other_messages': False,
                                 'can_add_web_page_previews': False
                             })
-                            await send(chat_id, f'🚫 <b>تم تقييد {m}</b>\n\nوصل عدد التحذيرات إلى 5 بسبب إرسال ملصق مخالف')
+                            await send(chat_id, f'🚫 <b>تم تقييد {m}</b>\n\nوصل عدد التحذيرات إلى 5 بسبب إرسال ملصق مخالف', reply)
                         else:
-                            await send(chat_id, f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\nنوع المخالفة: <b>{violation_type}</b>')
+                            await send(chat_id, f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\nنوع المخالفة: <b>{violation_type}</b>', reply)
                     else:
-                        await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>')
+                        await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>', reply)
                     return
 
         if is_animated and settings['lock_animated']:
@@ -1419,17 +1419,9 @@ async def process_cmd(msg, data, state, text, settings):
 
     user_rank = get_rank(data, chat_id, user_id)
     tg_admin = await is_tg_admin(chat_id, user_id)
-    if rank_level(user_rank) < rank_level('ادمن') and not tg_admin:
-        return
+    is_member_only = rank_level(user_rank) < rank_level('ادمن') and not tg_admin
 
-    locked_cmds = settings.get('locked_commands', {})
-    if text in locked_cmds:
-        required_rank = locked_cmds[text]
-        if rank_level(user_rank) < rank_level(required_rank) and not tg_admin:
-            await send(chat_id, f'⛔ هذا الأمر مخصص لرتبة <b>{required_rank}</b> فقط', reply)
-            return
-
-    # ردود تلقائية
+    # ردود تلقائية - للجميع بمن فيهم الأعضاء
     if not settings.get('disable_auto_replies'):
         if re.match(r'^بوت', text) or text == 'بوت':
             await send(chat_id, random.choice(['وش تبي 😒', 'اهلا 👋', 'شكد مزعج 😤', 'عندي اسم ترا 🌹']), reply)
@@ -1452,6 +1444,38 @@ async def process_cmd(msg, data, state, text, settings):
         if text == 'انجب':
             await send(chat_id, 'هاي اخلاقك يعني 😑', reply)
             return
+
+    # الردود المخصصة - للجميع
+    replies_early = data['custom_replies'].get(cid, {})
+    if text in replies_early:
+        rd = replies_early[text]
+        if rd['type'] == 'text':
+            await send(chat_id, rd['content'], reply)
+        elif rd['type'] == 'photo':
+            await api_call('sendPhoto', {'chat_id': chat_id, 'photo': rd['file_id'], 'caption': rd.get('caption', ''), 'parse_mode': 'HTML', 'reply_to_message_id': msg_id})
+        elif rd['type'] == 'video':
+            await api_call('sendVideo', {'chat_id': chat_id, 'video': rd['file_id'], 'caption': rd.get('caption', ''), 'parse_mode': 'HTML', 'reply_to_message_id': msg_id})
+        return
+
+    # الأعضاء العاديون: إذا حاولوا استخدام أوامر الأدمن، أخبرهم برتبتهم
+    ADMIN_CMD_PREFIXES = ['قفل ', 'فتح ', 'تعطيل ', 'تفعيل ', 'رفع مالك', 'تنزيل مالك',
+        'رفع مدير', 'تنزيل مدير', 'رفع ادمن', 'تنزيل ادمن', 'رفع مميز', 'تنزيل مميز']
+    ADMIN_CMD_EXACT = ['التنظيف', 'اضف رد', 'مسح رد', 'كتم', 'تقييد', 'رفع القيود',
+        'الغاء الكتم', 'الغاء التقييد', 'طرد', 'مسح', 'قفل امر', 'اضف امر', 'الاوامر', 'اوامر']
+    is_admin_cmd = text in ADMIN_CMD_EXACT or any(text.startswith(p) for p in ADMIN_CMD_PREFIXES)
+    if is_member_only and is_admin_cmd:
+        await send(chat_id, f'⛔ {m} رتبتك <b>عضو</b> وما تقدر تستخدم هذا الأمر', reply)
+        return
+
+    locked_cmds = settings.get('locked_commands', {})
+    if text in locked_cmds:
+        required_rank = locked_cmds[text]
+        if rank_level(user_rank) < rank_level(required_rank) and not tg_admin:
+            await send(chat_id, f'⛔ {m} رتبتك <b>{user_rank}</b> وهذا الأمر مخصص لرتبة <b>{required_rank}</b> فقط', reply)
+            return
+
+    if is_member_only:
+        return
 
     # التنظيف - للمالك فقط
     if text == 'التنظيف':
@@ -1673,16 +1697,6 @@ async def process_cmd(msg, data, state, text, settings):
         await send(chat_id, '🗑️ أرسل اسم الرد الذي تريد حذفه:', reply)
         return
 
-    replies = data['custom_replies'].get(cid, {})
-    if text in replies:
-        rd = replies[text]
-        if rd['type'] == 'text':
-            await send(chat_id, rd['content'], reply)
-        elif rd['type'] == 'photo':
-            await api_call('sendPhoto', {'chat_id': chat_id, 'photo': rd['file_id'], 'caption': rd.get('caption', ''), 'parse_mode': 'HTML', 'reply_to_message_id': msg_id})
-        elif rd['type'] == 'video':
-            await api_call('sendVideo', {'chat_id': chat_id, 'video': rd['file_id'], 'caption': rd.get('caption', ''), 'parse_mode': 'HTML', 'reply_to_message_id': msg_id})
-        return
 
     # ===========================
     # أوامر القفل والإعدادات
