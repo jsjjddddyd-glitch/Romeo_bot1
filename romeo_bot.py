@@ -16,6 +16,8 @@ STATE_FILE = './state.json'
 SIGHTENGINE_API_USER = '130043340'
 SIGHTENGINE_API_SECRET = 'RFozDT5M3VYmccC2rcArKqnMPWPCKJfE'
 
+DEVELOPER_USERNAME = 'c9aac'
+
 _session = None
 
 async def get_session():
@@ -78,11 +80,14 @@ def get_settings(data, chat_id):
         'lock_nsfw_restrict': False,
         'lock_nsfw_warn': False,
         'lock_files': False,
+        'lock_channel_usernames': False,
+        'lock_all_usernames': False,
         'clean_auto': False,
         'clean_interval': 1,
         'clean_numbers': False,
         'clean_clutter': False,
         'clean_edited': False,
+        'clean_files': False,
         'youtube_enabled': True,
         'locked_commands': {},
     }
@@ -353,16 +358,6 @@ async def check_image_nsfw(file_id):
             drug = result.get('recreational_drug', {})
             if drug.get('prob', 0) > 0.7:
                 return True, 'مواد ممنوعة'
-            face = result.get('faces', [])
-            for f in face:
-                age_info = f.get('attributes', {}).get('age', {})
-                avg_age = (age_info.get('min', 20) + age_info.get('max', 20)) / 2
-                nudity_raw = result.get('nudity', {})
-                if avg_age < 18 and (nudity_raw.get('suggestive', 0) > 0.5 or nudity_raw.get('sexual_display', 0) > 0.3):
-                    return True, 'محتوى يخص قاصرين'
-            classes_text = result.get('text', {}).get('classes', {})
-            if classes_text.get('gov_id', 0) > 0.6 or classes_text.get('personal', 0) > 0.7:
-                return True, 'وثائق رسمية/هوية'
             return False, None
     except Exception as e:
         print(f'NSFW check error: {e}')
@@ -374,47 +369,75 @@ async def check_image_nsfw(file_id):
 
 youtube_pending = {}
 
+INVIDIOUS_INSTANCES = [
+    'https://invidious.privacydev.net',
+    'https://inv.tux.pizza',
+    'https://invidious.nerdvpn.de',
+    'https://invidious.fdn.fr',
+    'https://vid.puffyan.us',
+]
+
 async def youtube_search(query, max_results=4):
+    session = await get_session()
+    headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
+    params = {'q': query, 'type': 'video'}
+
+    # جرب كل instance حتى تنجح واحدة
+    for instance in INVIDIOUS_INSTANCES:
+        try:
+            url = f'{instance}/api/v1/search'
+            async with session.get(url, params=params, headers=headers,
+                                   timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    continue
+                data = await resp.json(content_type=None)
+                if not isinstance(data, list) or not data:
+                    continue
+                results = []
+                seen = set()
+                for item in data:
+                    # فيديوهات فقط، تجاهل القوائم والقنوات
+                    if item.get('type') not in ('video', None):
+                        continue
+                    vid_id = item.get('videoId', '')
+                    title = item.get('title', '')
+                    if not vid_id or len(vid_id) != 11 or vid_id in seen or not title:
+                        continue
+                    seen.add(vid_id)
+                    secs = item.get('lengthSeconds', 0)
+                    dur = f'{secs // 60}:{secs % 60:02d}' if secs else ''
+                    label = f'🎵 {title[:55]}' + (f'  [{dur}]' if dur else '')
+                    results.append({'id': vid_id, 'title': label})
+                    if len(results) >= max_results:
+                        break
+                if results:
+                    return results
+        except Exception as e:
+            print(f'Invidious {instance} error: {e}')
+            continue
+
+    # fallback: scrape يوتيوب مباشرة
     try:
-        session = await get_session()
         search_url = 'https://www.youtube.com/results'
-        params = {'search_query': query}
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'ar,en;q=0.9'
-        }
-        async with session.get(search_url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        h2 = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+              'Accept-Language': 'ar,en;q=0.9'}
+        async with session.get(search_url, params={'search_query': query}, headers=h2,
+                               timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status != 200:
                 return []
             html = await resp.text()
-
         results = []
         seen_ids = set()
-
-        pattern1 = r'"videoId":"([a-zA-Z0-9_-]{11})"[^}]*?"title":\{"runs":\[\{"text":"([^"]+)"'
-        for vid_id, title in re.findall(pattern1, html):
-            if vid_id not in seen_ids and len(vid_id) == 11:
+        pattern = r'"videoId":"([a-zA-Z0-9_-]{11})"[^}]*?"title":\{"runs":\[\{"text":"([^"]+)"'
+        for vid_id, title in re.findall(pattern, html):
+            if vid_id not in seen_ids:
                 seen_ids.add(vid_id)
-                results.append({'id': vid_id, 'title': title[:60]})
+                results.append({'id': vid_id, 'title': f'🎵 {title[:60]}'})
             if len(results) >= max_results:
                 break
-
-        if not results:
-            pattern2 = r'"videoId":"([a-zA-Z0-9_-]{11})"'
-            pattern3 = r'"text":"([^"]{5,80})"'
-            ids = re.findall(pattern2, html)
-            titles = re.findall(pattern3, html)
-            for i, vid_id in enumerate(ids):
-                if vid_id not in seen_ids and len(vid_id) == 11:
-                    seen_ids.add(vid_id)
-                    title = titles[i] if i < len(titles) else vid_id
-                    results.append({'id': vid_id, 'title': title[:60]})
-                if len(results) >= max_results:
-                    break
-
         return results
     except Exception as e:
-        print(f'YouTube search error: {e}')
+        print(f'YouTube fallback error: {e}')
         return []
 
 async def download_youtube_audio(video_id):
@@ -450,7 +473,7 @@ async def send_youtube_results(chat_id, msg_id, query, results):
     keyboard = {'inline_keyboard': buttons}
     await api_call('sendMessage', {
         'chat_id': chat_id,
-        'text': f'🔍 نتائج البحث ‹‹ {query}',
+        'text': f'• نتائج البحث ‹‹ {query}',
         'reply_to_message_id': msg_id,
         'reply_markup': keyboard,
         'parse_mode': 'HTML'
@@ -498,12 +521,7 @@ ARABIC_MONTHS = {
 
 def get_account_creation_text(from_):
     date_str = format_account_date(from_['id'])
-    try:
-        parts = date_str.split('-')
-        month_name = ARABIC_MONTHS.get(int(parts[1]), parts[1])
-        return f'📅 تقريباً: {month_name} {parts[0]}'
-    except:
-        return f'📅 {date_str}'
+    return date_str
 
 # ===========================
 # CLEAN MENU BUILDER
@@ -513,6 +531,7 @@ def build_clean_menu(settings):
     auto = '✓' if settings.get('clean_auto') else '✗'
     numbers_mark = ' ✓' if settings.get('clean_numbers') else ''
     clutter_mark = ' ✓' if settings.get('clean_clutter') else ''
+    files_mark = ' ✓' if settings.get('clean_files') else ''
     interval = settings.get('clean_interval', 1)
 
     text = (
@@ -523,7 +542,8 @@ def build_clean_menu(settings):
         f'• وقت التنظيف: {interval} {"دقيقة" if interval == 1 else "دقائق"}\n'
         f'• الأرقام: {"✓ مفعّل" if settings.get("clean_numbers") else "معطّل"}\n'
         f'• الكلايش (رسائل طويلة): {"✓ مفعّل" if settings.get("clean_clutter") else "معطّل"}\n'
-        f'• الرسائل المعدلة: {"✓ مفعّل" if settings.get("clean_edited") else "معطّل"}'
+        f'• الرسائل المعدلة: {"✓ مفعّل" if settings.get("clean_edited") else "معطّل"}\n'
+        f'• الملفات: {"✓ مفعّل" if settings.get("clean_files") else "معطّل"}'
     )
 
     keyboard = {
@@ -533,7 +553,10 @@ def build_clean_menu(settings):
                 {'text': f'الأرقام{numbers_mark}', 'callback_data': 'clean_toggle_numbers'},
                 {'text': f'الكلايش{clutter_mark}', 'callback_data': 'clean_toggle_clutter'}
             ],
-            [{'text': f'• الرسائل المعدلة ({("✓" if settings.get("clean_edited") else "")})', 'callback_data': 'clean_toggle_edited'}],
+            [
+                {'text': f'• الرسائل المعدلة ({("✓" if settings.get("clean_edited") else "✗")})', 'callback_data': 'clean_toggle_edited'},
+                {'text': f'الملفات{(" ✓" if settings.get("clean_files") else " ✗")}', 'callback_data': 'clean_toggle_files'}
+            ],
             [{'text': f'• وقت التنظيف {interval} د', 'callback_data': 'clean_set_time'}],
             [{'text': '🔙 رجوع', 'callback_data': 'clean_back'}]
         ]
@@ -543,10 +566,11 @@ def build_clean_menu(settings):
 def add_to_clean_queue(chat_id, msg_id, msg_type):
     cid = str(chat_id)
     if cid not in clean_queue:
-        clean_queue[cid] = {'photos': [], 'videos': [], 'stickers': [], 'numbers': [], 'clutter': [], 'edited': []}
-    if msg_type in clean_queue[cid]:
-        if msg_id not in clean_queue[cid][msg_type]:
-            clean_queue[cid][msg_type].append(msg_id)
+        clean_queue[cid] = {'photos': [], 'videos': [], 'stickers': [], 'numbers': [], 'clutter': [], 'edited': [], 'files': []}
+    if msg_type not in clean_queue[cid]:
+        clean_queue[cid][msg_type] = []
+    if msg_id not in clean_queue[cid][msg_type]:
+        clean_queue[cid][msg_type].append(msg_id)
 
 async def run_clean(chat_id, settings):
     cid = str(chat_id)
@@ -559,7 +583,8 @@ async def run_clean(chat_id, settings):
         'stickers': 'الملصقات',
         'numbers': 'الأرقام',
         'clutter': 'الكلايش',
-        'edited': 'الرسائل المعدلة'
+        'edited': 'الرسائل المعدلة',
+        'files': 'الملفات'
     }
 
     for msg_type, ids in queue.items():
@@ -571,7 +596,7 @@ async def run_clean(chat_id, settings):
         if deleted > 0:
             counts[type_labels.get(msg_type, msg_type)] = deleted
 
-    clean_queue[cid] = {'photos': [], 'videos': [], 'stickers': [], 'numbers': [], 'clutter': [], 'edited': []}
+    clean_queue[cid] = {'photos': [], 'videos': [], 'stickers': [], 'numbers': [], 'clutter': [], 'edited': [], 'files': []}
 
     if counts:
         lines = '\n'.join(f'  • {k} ← {v}' for k, v in counts.items())
@@ -651,7 +676,8 @@ menu_texts = {
         'قفل الصوتيات | قفل الاغاني | قفل التحويل\n'
         'قفل الدخول | قفل التاك | قفل الارقام\n'
         'قفل الملصقات | قفل المتحركة | قفل الشات\n'
-        'قفل الملفات\n'
+        'قفل الملفات | قفل يوزرات القنوات\n'
+        'قفل كل اليوزرات\n'
         'قفل المحتوى المخل | فتح المحتوى المخل\n'
         'قفل المحتوى المخل بالتقييد\n'
         'قفل المحتوى المخل بالتحذير'
@@ -701,7 +727,7 @@ async def handle_callback(cb):
         return
 
     if data_cb in ('clean_toggle_auto', 'clean_toggle_numbers', 'clean_toggle_clutter',
-                   'clean_toggle_edited', 'clean_set_time', 'clean_back',
+                   'clean_toggle_edited', 'clean_toggle_files', 'clean_set_time', 'clean_back',
                    'clean_disable_auto', 'clean_hide_report'):
 
         if not await is_group_creator(chat_id, user_id):
@@ -732,6 +758,12 @@ async def handle_callback(cb):
 
         elif data_cb == 'clean_toggle_edited':
             settings['clean_edited'] = not settings.get('clean_edited', False)
+            save_data(data)
+            text, keyboard = build_clean_menu(settings)
+            await edit_msg(chat_id, msg_id, text, keyboard)
+
+        elif data_cb == 'clean_toggle_files':
+            settings['clean_files'] = not settings.get('clean_files', False)
             save_data(data)
             text, keyboard = build_clean_menu(settings)
             await edit_msg(chat_id, msg_id, text, keyboard)
@@ -1137,13 +1169,56 @@ async def handle_edited_message(msg):
 # BOT ADDED AS ADMIN HANDLER
 # ===========================
 
+async def notify_developer_group_added(chat, added_by):
+    try:
+        chat_id = chat.get('id')
+        chat_title = chat.get('title', 'غير معروف')
+        chat_username = chat.get('username')
+        adder_id = added_by.get('id')
+        adder_username = added_by.get('username')
+        adder_name = ((added_by.get('first_name') or '') + ' ' + (added_by.get('last_name') or '')).strip() or 'مجهول'
+
+        invite_link = None
+        try:
+            invite_link = await api_call('exportChatInviteLink', {'chat_id': chat_id})
+        except:
+            pass
+
+        group_link = f'https://t.me/{chat_username}' if chat_username else (invite_link or 'لا يوجد رابط')
+
+        msg_text = (
+            f'📣 <b>تم إضافة البوت لمجموعة جديدة</b>\n\n'
+            f'📌 اسم المجموعة: <b>{chat_title}</b>\n'
+            f'🆔 آيدي المجموعة: <code>{chat_id}</code>\n'
+            f'🔗 رابط المجموعة: {group_link}\n\n'
+            f'👤 أضافه:\n'
+            f'  الاسم: <b>{adder_name}</b>\n'
+            f'  اليوزر: {"@" + adder_username if adder_username else "لا يوجد"}\n'
+            f'  الآيدي: <code>{adder_id}</code>'
+        )
+        try:
+            dev_info = await api_call('getChat', {'chat_id': f'@{DEVELOPER_USERNAME}'})
+            if dev_info:
+                dev_id = dev_info.get('id')
+                await api_call('sendMessage', {
+                    'chat_id': dev_id,
+                    'text': msg_text,
+                    'parse_mode': 'HTML'
+                })
+        except:
+            pass
+    except Exception as e:
+        print(f'Developer notify error: {e}')
+
 async def handle_my_chat_member(update):
     new_status = update.get('new_chat_member', {}).get('status')
     chat = update.get('chat', {})
     chat_type = chat.get('type', '')
     chat_id = chat.get('id')
+    from_user = update.get('from', {})
     if new_status == 'administrator' and chat_type in ['group', 'supergroup']:
         await send(chat_id, '✅ تم تفعيل المجموعة بنجاح 🌹\nأنا بوت روميو جاهز لإدارة المجموعة!')
+        asyncio.create_task(notify_developer_group_added(chat, from_user))
 
 # ===========================
 # START COMMAND - PRIVATE ONLY
@@ -1179,6 +1254,7 @@ async def media_mod(msg, data, settings):
     from_ = msg.get('from', {})
     user_id = from_.get('id')
     m = mention(from_)
+    uname = name(from_)
     reply = {'reply_to_message_id': msg_id}
 
     if await is_tg_admin(chat_id, user_id):
@@ -1187,13 +1263,16 @@ async def media_mod(msg, data, settings):
     is_forward = msg.get('forward_from') or msg.get('forward_from_chat') or msg.get('forward_sender_name')
     if is_forward and settings['lock_forward']:
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع التوجيه والتحويل هنا', reply)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع التوجيه والتحويل هنا .', reply)
         return
 
     if msg.get('document'):
         if settings.get('lock_files'):
             await delete(chat_id, msg_id)
-            await send(chat_id, f'⚠️ عذراً {m}\nممنوع ارسال الملفات هنا', reply)
+            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الملفات هنا .', reply)
+            return
+        if settings.get('clean_auto') and settings.get('clean_files'):
+            add_to_clean_queue(chat_id, msg_id, 'files')
             return
 
     if msg.get('photo'):
@@ -1256,7 +1335,7 @@ async def media_mod(msg, data, settings):
 
         if settings['lock_photos']:
             await delete(chat_id, msg_id)
-            await send(chat_id, f'⚠️ عذرا عزيزي {m}\nممنوع ارسال الصور هنا', reply)
+            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الصور هنا .', reply)
             return
 
         if settings.get('clean_auto'):
@@ -1266,7 +1345,7 @@ async def media_mod(msg, data, settings):
     if msg.get('video'):
         if settings['lock_videos']:
             await delete(chat_id, msg_id)
-            await send(chat_id, f'⚠️ عذرا عزيزي {m}\nممنوع ارسال الفيديوهات هنا', reply)
+            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الفيديوهات هنا .', reply)
             return
         if settings.get('clean_auto'):
             add_to_clean_queue(chat_id, msg_id, 'videos')
@@ -1274,12 +1353,12 @@ async def media_mod(msg, data, settings):
 
     if msg.get('voice') and settings['lock_audio']:
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m} ممنوع ارسال الرسائل الصوتية هنا', reply)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الرسائل الصوتية هنا .', reply)
         return
 
     if msg.get('audio') and settings['lock_music']:
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m} ممنوع ارسال الاغاني هنا', reply)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الاغاني هنا .', reply)
         return
 
     if msg.get('sticker'):
@@ -1319,11 +1398,11 @@ async def media_mod(msg, data, settings):
 
         if is_animated and settings['lock_animated']:
             await delete(chat_id, msg_id)
-            await send(chat_id, f'⚠️ {m} ممنوع الملصقات المتحركة هنا', reply)
+            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الملصقات المتحركة هنا .', reply)
             return
         if not is_animated and settings['lock_stickers']:
             await delete(chat_id, msg_id)
-            await send(chat_id, f'⚠️ {m} ممنوع الملصقات هنا', reply)
+            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الملصقات هنا .', reply)
             return
         if settings.get('clean_auto'):
             add_to_clean_queue(chat_id, msg_id, 'stickers')
@@ -1345,52 +1424,72 @@ async def content_mod(msg, data, settings):
     if await is_tg_admin(chat_id, user_id):
         return False
 
+    uname = name(from_)
+
     is_forward = msg.get('forward_from') or msg.get('forward_from_chat') or msg.get('forward_sender_name')
     if is_forward and settings['lock_forward']:
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع التوجيه والتحويل هنا', reply)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع التوجيه والتحويل هنا .', reply)
         return True
 
     swears = ['انيجك', 'انيج امك', 'كسمك', 'عير بابوك', 'عير بامك', 'قحبه', 'كحبه', 'شرموط', 'شرموطه', 'زبفيك', 'عيرك', 'كسي', 'زبي', 'عيري']
     if settings['lock_swear'] and any(w in text for w in swears):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nالسب ممنوع هنا ❌', reply)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع السب هنا .', reply)
         return True
 
     if settings['lock_links'] and re.search(r'(https?://|t\.me/|www\.)', text, re.IGNORECASE):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع ارسال الروابط هنا', reply)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الروابط هنا .', reply)
         return True
 
     if settings['lock_mention'] and re.search(r'@\w+', text):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع التاك هنا', reply)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع التاك هنا .', reply)
         return True
 
     if settings['lock_numbers'] and re.search(r'(?<!\d)\+?\d{9,12}(?!\d)', text):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع ارسال الارقام هنا', reply)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الارقام هنا .', reply)
         return True
 
     if settings['lock_clutter'] and len(text) > 1000:
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع ارسال الرسائل الطويلة هنا', reply)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الرسائل الطويلة هنا .', reply)
         return True
 
     if settings['lock_english'] and re.search(r'[a-zA-Z]', text):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع الكتابة بالانجليزية هنا', reply)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الكتابة بالانجليزية هنا .', reply)
         return True
 
     if settings['lock_chinese'] and re.search(r'[\u4e00-\u9fff]', text):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع اللغة الصينية هنا', reply)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع اللغة الصينية هنا .', reply)
         return True
 
     if settings['lock_russian'] and re.search(r'[\u0400-\u04FF]', text):
         await delete(chat_id, msg_id)
-        await send(chat_id, f'⚠️ {m}\nممنوع اللغة الروسية هنا', reply)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع اللغة الروسية هنا .', reply)
         return True
+
+    if settings.get('lock_channel_usernames') or settings.get('lock_all_usernames'):
+        mentions = re.findall(r'@(\w+)', text)
+        for uname_found in mentions:
+            try:
+                ch = await api_call('getChat', {'chat_id': f'@{uname_found}'})
+                if ch:
+                    ch_type = ch.get('type', '')
+                    if settings.get('lock_all_usernames'):
+                        await delete(chat_id, msg_id)
+                        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال اليوزرات هنا .', reply)
+                        return True
+                    if settings.get('lock_channel_usernames') and ch_type in ['channel', 'supergroup', 'group']:
+                        await delete(chat_id, msg_id)
+                        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال يوزرات القنوات والمجموعات هنا .', reply)
+                        return True
+            except:
+                pass
 
     if settings.get('clean_auto'):
         if settings.get('clean_numbers') and re.search(r'(?<!\d)\+?\d{9,12}(?!\d)', text):
@@ -1591,10 +1690,15 @@ async def process_cmd(msg, data, state, text, settings):
             if msg.get('reply_to_message'):
                 tf = msg['reply_to_message']['from']
                 creation = get_account_creation_text(tf)
-                await send(chat_id, f'🗓️ تاريخ إنشاء حساب {mention(tf)}:\n{creation}', reply)
+                tf_name = name(tf)
+                await send(chat_id,
+                    f'‹‹ تاريخ انشاء حساب {tf_name} هو\n‹‹ {creation}',
+                    reply)
             else:
                 creation = get_account_creation_text(from_)
-                await send(chat_id, f'🗓️ تاريخ إنشاء حسابك:\n{creation}', reply)
+                await send(chat_id,
+                    f'‹‹ تاريخ انشاء حسابك هو\n‹‹ {creation}',
+                    reply)
             return
 
         yt_match = re.match(r'^يوت\s+(.+)$', text)
@@ -1731,6 +1835,8 @@ async def process_cmd(msg, data, state, text, settings):
             'قفل المحتوى المخل بالتقييد': 'lock_nsfw_restrict', 'فتح المحتوى المخل بالتقييد': 'lock_nsfw_restrict',
             'قفل المحتوى المخل بالتحذير': 'lock_nsfw_warn', 'فتح المحتوى المخل بالتحذير': 'lock_nsfw_warn',
             'قفل الملفات': 'lock_files', 'فتح الملفات': 'lock_files',
+            'قفل يوزرات القنوات': 'lock_channel_usernames', 'فتح يوزرات القنوات': 'lock_channel_usernames',
+            'قفل كل اليوزرات': 'lock_all_usernames', 'فتح كل اليوزرات': 'lock_all_usernames',
         }
         if text in lock_map:
             is_lock = text.startswith('قفل')
