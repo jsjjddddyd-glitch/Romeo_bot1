@@ -75,6 +75,7 @@ def get_settings(data, chat_id):
         'lock_videos': False, 'lock_media_edit': False, 'lock_audio': False, 'lock_music': False,
         'lock_repeat': False, 'lock_mention': False, 'lock_numbers': False, 'lock_stickers': False,
         'lock_animated': False, 'lock_chat': False, 'lock_join': False,
+        'lock_external_reply': False, 'lock_quote': False,
         'disable_id': False, 'disable_service': False, 'disable_fun': False,
         'disable_welcome': False, 'disable_link': False, 'disable_auto_replies': False,
         'disable_games': False,
@@ -358,7 +359,7 @@ async def check_image_nsfw(file_id):
             if weapon.get('classes', {}).get('firearm', 0) > 0.7 or weapon.get('classes', {}).get('knife', 0) > 0.8:
                 return True, 'أسلحة'
             drug = result.get('recreational_drug', {})
-            if drug.get('prob', 0) > 0.7:
+            if drug.get('prob', 0) > 0.4:
                 return True, 'مواد ممنوعة'
             return False, None
     except Exception as e:
@@ -680,6 +681,7 @@ menu_texts = {
         'قفل الملصقات | قفل المتحركة | قفل الشات\n'
         'قفل الملفات | قفل يوزرات القنوات\n'
         'قفل كل اليوزرات\n'
+        'قفل الردود الخارجية | قفل الاقتباسات\n'
         'قفل المحتوى المخل | فتح المحتوى المخل\n'
         'قفل المحتوى المخل بالتقييد\n'
         'قفل المحتوى المخل بالتحذير'
@@ -1262,118 +1264,44 @@ async def media_mod(msg, data, settings):
     if await is_admin_up(data, chat_id, user_id):
         return
 
+    if settings.get('lock_external_reply') and msg.get('external_reply'):
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الردود الخارجية هنا .', reply)
+        await delete(chat_id, msg_id)
+        return
+
+    if settings.get('lock_quote') and msg.get('quote'):
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الاقتباس هنا .', reply)
+        await delete(chat_id, msg_id)
+        return
+
     is_forward = msg.get('forward_from') or msg.get('forward_from_chat') or msg.get('forward_sender_name')
     if is_forward and settings['lock_forward']:
-        await delete(chat_id, msg_id)
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع التوجيه والتحويل هنا .', reply)
+        await delete(chat_id, msg_id)
         return
 
     if msg.get('document'):
         if settings.get('lock_files'):
-            await delete(chat_id, msg_id)
             await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الملفات هنا .', reply)
+            await delete(chat_id, msg_id)
             return
         if settings.get('clean_auto') and settings.get('clean_files'):
             add_to_clean_queue(chat_id, msg_id, 'files')
             return
 
-    if msg.get('photo'):
-        photo_list = msg['photo']
-        file_id = photo_list[-1]['file_id']
-
-        if settings.get('lock_nsfw_restrict'):
-            is_violation, violation_type = await check_image_nsfw(file_id)
-            if is_violation:
-                await delete(chat_id, msg_id)
-                await restrict(chat_id, user_id, {
-                    'can_send_messages': False, 'can_send_media_messages': False,
-                    'can_send_polls': False, 'can_send_other_messages': False,
-                    'can_add_web_page_previews': False
-                })
-                await send(chat_id, (
-                    f'🚫 <b>تم حذف صورة مخالفة وتقييد العضو</b>\n\n'
-                    f'👤 المرسل: {m}\n'
-                    f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
-                    f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
-                ), reply)
-                return
-
-        if settings.get('lock_nsfw_warn'):
-            is_violation, violation_type = await check_image_nsfw(file_id)
-            if is_violation:
-                await delete(chat_id, msg_id)
-                warns = add_warning(data, chat_id, user_id)
-                if warns >= 5:
-                    reset_warnings(data, chat_id, user_id)
-                    await restrict(chat_id, user_id, {
-                        'can_send_messages': False, 'can_send_media_messages': False,
-                        'can_send_polls': False, 'can_send_other_messages': False,
-                        'can_add_web_page_previews': False
-                    })
-                    await send(chat_id, (
-                        f'🚫 <b>تم تقييد {m}</b>\n\n'
-                        f'وصل عدد التحذيرات إلى 5 بسبب إرسال محتوى مخالف\n'
-                        f'⚠️ نوع المخالفة: <b>{violation_type}</b>'
-                    ), reply)
-                else:
-                    await send(chat_id, (
-                        f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\n'
-                        f'نوع المخالفة: <b>{violation_type}</b>\n'
-                        f'عند الوصول لـ 5 تحذيرات سيتم تقييدك ❌'
-                    ), reply)
-                return
-
-        if settings.get('lock_nsfw', False):
-            is_violation, violation_type = await check_image_nsfw(file_id)
-            if is_violation:
-                await delete(chat_id, msg_id)
-                await send(chat_id, (
-                    f'🚫 <b>تم حذف صورة مخالفة</b>\n\n'
-                    f'👤 المرسل: {m}\n'
-                    f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
-                    f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
-                ), reply)
-                return
-
-        if settings['lock_photos']:
-            await delete(chat_id, msg_id)
-            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الصور هنا .', reply)
-            return
-
-        if settings.get('clean_auto'):
-            add_to_clean_queue(chat_id, msg_id, 'photos')
-        return
-
-    if msg.get('video'):
-        if settings['lock_videos']:
-            await delete(chat_id, msg_id)
-            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الفيديوهات هنا .', reply)
-            return
-        if settings.get('clean_auto'):
-            add_to_clean_queue(chat_id, msg_id, 'videos')
-        return
-
-    if msg.get('voice') and settings['lock_audio']:
-        await delete(chat_id, msg_id)
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الرسائل الصوتية هنا .', reply)
-        return
-
-    if msg.get('audio') and settings['lock_music']:
-        await delete(chat_id, msg_id)
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الاغاني هنا .', reply)
-        return
-
-    if msg.get('sticker'):
-        sticker = msg['sticker']
-        is_animated = sticker.get('is_animated') or sticker.get('is_video')
-
+    if msg.get('animation'):
+        anim = msg['animation']
         if settings.get('lock_nsfw') or settings.get('lock_nsfw_restrict') or settings.get('lock_nsfw_warn'):
-            sticker_file_id = sticker.get('thumbnail', {}).get('file_id') if sticker.get('thumbnail') else None
-            if not sticker_file_id:
-                sticker_file_id = sticker.get('file_id')
-            if sticker_file_id and not is_animated:
-                is_violation, violation_type = await check_image_nsfw(sticker_file_id)
+            thumb_id = (anim.get('thumbnail') or {}).get('file_id') or anim.get('file_id')
+            if thumb_id:
+                is_violation, violation_type = await check_image_nsfw(thumb_id)
                 if is_violation:
+                    await send(chat_id, (
+                        f'🚫 <b>تم حذف صورة متحركة مخالفة</b>\n\n'
+                        f'👤 المرسل: {m}\n'
+                        f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
+                        f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
+                    ), reply)
                     await delete(chat_id, msg_id)
                     if settings.get('lock_nsfw_restrict'):
                         await restrict(chat_id, user_id, {
@@ -1381,7 +1309,6 @@ async def media_mod(msg, data, settings):
                             'can_send_polls': False, 'can_send_other_messages': False,
                             'can_add_web_page_previews': False
                         })
-                        await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف وتقييد العضو</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>', reply)
                     elif settings.get('lock_nsfw_warn'):
                         warns = add_warning(data, chat_id, user_id)
                         if warns >= 5:
@@ -1391,20 +1318,145 @@ async def media_mod(msg, data, settings):
                                 'can_send_polls': False, 'can_send_other_messages': False,
                                 'can_add_web_page_previews': False
                             })
+                    return
+        if settings['lock_videos']:
+            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الصور المتحركة هنا .', reply)
+            await delete(chat_id, msg_id)
+            return
+        if settings.get('clean_auto'):
+            add_to_clean_queue(chat_id, msg_id, 'videos')
+        return
+
+    if msg.get('photo'):
+        photo_list = msg['photo']
+        file_id = photo_list[-1]['file_id']
+
+        if settings.get('lock_nsfw_restrict'):
+            is_violation, violation_type = await check_image_nsfw(file_id)
+            if is_violation:
+                await send(chat_id, (
+                    f'🚫 <b>تم حذف صورة مخالفة وتقييد العضو</b>\n\n'
+                    f'👤 المرسل: {m}\n'
+                    f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
+                    f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
+                ), reply)
+                await delete(chat_id, msg_id)
+                await restrict(chat_id, user_id, {
+                    'can_send_messages': False, 'can_send_media_messages': False,
+                    'can_send_polls': False, 'can_send_other_messages': False,
+                    'can_add_web_page_previews': False
+                })
+                return
+
+        if settings.get('lock_nsfw_warn'):
+            is_violation, violation_type = await check_image_nsfw(file_id)
+            if is_violation:
+                warns = add_warning(data, chat_id, user_id)
+                if warns >= 5:
+                    reset_warnings(data, chat_id, user_id)
+                    await send(chat_id, (
+                        f'🚫 <b>تم تقييد {m}</b>\n\n'
+                        f'وصل عدد التحذيرات إلى 5 بسبب إرسال محتوى مخالف\n'
+                        f'⚠️ نوع المخالفة: <b>{violation_type}</b>'
+                    ), reply)
+                    await delete(chat_id, msg_id)
+                    await restrict(chat_id, user_id, {
+                        'can_send_messages': False, 'can_send_media_messages': False,
+                        'can_send_polls': False, 'can_send_other_messages': False,
+                        'can_add_web_page_previews': False
+                    })
+                else:
+                    await send(chat_id, (
+                        f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\n'
+                        f'نوع المخالفة: <b>{violation_type}</b>\n'
+                        f'عند الوصول لـ 5 تحذيرات سيتم تقييدك ❌'
+                    ), reply)
+                    await delete(chat_id, msg_id)
+                return
+
+        if settings.get('lock_nsfw', False):
+            is_violation, violation_type = await check_image_nsfw(file_id)
+            if is_violation:
+                await send(chat_id, (
+                    f'🚫 <b>تم حذف صورة مخالفة</b>\n\n'
+                    f'👤 المرسل: {m}\n'
+                    f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
+                    f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
+                ), reply)
+                await delete(chat_id, msg_id)
+                return
+
+        if settings['lock_photos']:
+            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الصور هنا .', reply)
+            await delete(chat_id, msg_id)
+            return
+
+        if settings.get('clean_auto'):
+            add_to_clean_queue(chat_id, msg_id, 'photos')
+        return
+
+    if msg.get('video'):
+        if settings['lock_videos']:
+            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الفيديوهات هنا .', reply)
+            await delete(chat_id, msg_id)
+            return
+        if settings.get('clean_auto'):
+            add_to_clean_queue(chat_id, msg_id, 'videos')
+        return
+
+    if msg.get('voice') and settings['lock_audio']:
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الرسائل الصوتية هنا .', reply)
+        await delete(chat_id, msg_id)
+        return
+
+    if msg.get('audio') and settings['lock_music']:
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الاغاني هنا .', reply)
+        await delete(chat_id, msg_id)
+        return
+
+    if msg.get('sticker'):
+        sticker = msg['sticker']
+        is_animated = sticker.get('is_animated') or sticker.get('is_video')
+
+        if settings.get('lock_nsfw') or settings.get('lock_nsfw_restrict') or settings.get('lock_nsfw_warn'):
+            sticker_file_id = (sticker.get('thumbnail') or {}).get('file_id') or sticker.get('file_id')
+            if sticker_file_id:
+                is_violation, violation_type = await check_image_nsfw(sticker_file_id)
+                if is_violation:
+                    if settings.get('lock_nsfw_restrict'):
+                        await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف وتقييد العضو</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>', reply)
+                        await delete(chat_id, msg_id)
+                        await restrict(chat_id, user_id, {
+                            'can_send_messages': False, 'can_send_media_messages': False,
+                            'can_send_polls': False, 'can_send_other_messages': False,
+                            'can_add_web_page_previews': False
+                        })
+                    elif settings.get('lock_nsfw_warn'):
+                        warns = add_warning(data, chat_id, user_id)
+                        if warns >= 5:
+                            reset_warnings(data, chat_id, user_id)
                             await send(chat_id, f'🚫 <b>تم تقييد {m}</b>\n\nوصل عدد التحذيرات إلى 5 بسبب إرسال ملصق مخالف', reply)
+                            await delete(chat_id, msg_id)
+                            await restrict(chat_id, user_id, {
+                                'can_send_messages': False, 'can_send_media_messages': False,
+                                'can_send_polls': False, 'can_send_other_messages': False,
+                                'can_add_web_page_previews': False
+                            })
                         else:
                             await send(chat_id, f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\nنوع المخالفة: <b>{violation_type}</b>', reply)
+                            await delete(chat_id, msg_id)
                     else:
                         await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>', reply)
+                        await delete(chat_id, msg_id)
                     return
 
         if is_animated and settings['lock_animated']:
-            await delete(chat_id, msg_id)
             await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الملصقات المتحركة هنا .', reply)
+            await delete(chat_id, msg_id)
             return
         if not is_animated and settings['lock_stickers']:
-            await delete(chat_id, msg_id)
             await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الملصقات هنا .', reply)
+            await delete(chat_id, msg_id)
             return
         if settings.get('clean_auto'):
             add_to_clean_queue(chat_id, msg_id, 'stickers')
@@ -1428,56 +1480,66 @@ async def content_mod(msg, data, settings):
 
     uname = name(from_)
 
+    if settings.get('lock_external_reply') and msg.get('external_reply'):
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الردود الخارجية هنا .', reply)
+        await delete(chat_id, msg_id)
+        return True
+
+    if settings.get('lock_quote') and msg.get('quote'):
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الاقتباس هنا .', reply)
+        await delete(chat_id, msg_id)
+        return True
+
     is_forward = msg.get('forward_from') or msg.get('forward_from_chat') or msg.get('forward_sender_name')
     if is_forward and settings['lock_forward']:
-        await delete(chat_id, msg_id)
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع التوجيه والتحويل هنا .', reply)
+        await delete(chat_id, msg_id)
         return True
 
     swears = ['انيجك', 'انيج امك', 'كسمك', 'عير بابوك', 'عير بامك', 'قحبه', 'كحبه', 'شرموط', 'شرموطه', 'زبفيك', 'عيرك', 'كسي', 'زبي', 'عيري']
     if settings['lock_swear'] and any(w in text for w in swears):
-        await delete(chat_id, msg_id)
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع السب هنا .', reply)
+        await delete(chat_id, msg_id)
         return True
 
     if settings['lock_links'] and re.search(r'(https?://|t\.me/|www\.)', text, re.IGNORECASE):
-        await delete(chat_id, msg_id)
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الروابط هنا .', reply)
+        await delete(chat_id, msg_id)
         return True
 
     if settings['lock_mention'] and re.search(r'@\w+', text):
-        await delete(chat_id, msg_id)
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع التاك هنا .', reply)
+        await delete(chat_id, msg_id)
         return True
 
     if settings['lock_numbers'] and re.search(r'(?<!\d)\+?\d{9,12}(?!\d)', text):
-        await delete(chat_id, msg_id)
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الارقام هنا .', reply)
+        await delete(chat_id, msg_id)
         return True
 
     if settings['lock_clutter'] and len(text) > 1000:
-        await delete(chat_id, msg_id)
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الرسائل الطويلة هنا .', reply)
+        await delete(chat_id, msg_id)
         return True
 
     if settings['lock_english'] and re.search(r'[a-zA-Z]', text):
-        await delete(chat_id, msg_id)
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الكتابة بالانجليزية هنا .', reply)
+        await delete(chat_id, msg_id)
         return True
 
     if settings['lock_chinese'] and re.search(r'[\u4e00-\u9fff]', text):
-        await delete(chat_id, msg_id)
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع اللغة الصينية هنا .', reply)
+        await delete(chat_id, msg_id)
         return True
 
     if settings['lock_russian'] and re.search(r'[\u0400-\u04FF]', text):
-        await delete(chat_id, msg_id)
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع اللغة الروسية هنا .', reply)
+        await delete(chat_id, msg_id)
         return True
 
     if settings.get('lock_all_usernames') and re.search(r'@\w+', text):
-        await delete(chat_id, msg_id)
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال اليوزرات هنا .', reply)
+        await delete(chat_id, msg_id)
         return True
 
     if settings.get('lock_channel_usernames'):
@@ -1486,8 +1548,8 @@ async def content_mod(msg, data, settings):
             try:
                 ch = await api_call('getChat', {'chat_id': f'@{uname_found}'})
                 if ch and ch.get('type', '') in ['channel', 'supergroup', 'group']:
-                    await delete(chat_id, msg_id)
                     await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال يوزرات القنوات والمجموعات هنا .', reply)
+                    await delete(chat_id, msg_id)
                     return True
             except:
                 pass
@@ -1499,8 +1561,8 @@ async def content_mod(msg, data, settings):
             last_messages[cid_key] = {}
         last_msg = last_messages[cid_key].get(uid_key, '')
         if text and text == last_msg:
-            await delete(chat_id, msg_id)
             await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع التكرار هنا .', reply)
+            await delete(chat_id, msg_id)
             return True
         last_messages[cid_key][uid_key] = text
 
@@ -1850,6 +1912,10 @@ async def process_cmd(msg, data, state, text, settings):
             'قفل الملفات': 'lock_files', 'فتح الملفات': 'lock_files',
             'قفل يوزرات القنوات': 'lock_channel_usernames', 'فتح يوزرات القنوات': 'lock_channel_usernames',
             'قفل كل اليوزرات': 'lock_all_usernames', 'فتح كل اليوزرات': 'lock_all_usernames',
+            'قفل الردود الخارجية': 'lock_external_reply', 'فتح الردود الخارجية': 'lock_external_reply',
+            'قفل الردود الخارجيه': 'lock_external_reply', 'فتح الردود الخارجيه': 'lock_external_reply',
+            'قفل الاقتباس': 'lock_quote', 'فتح الاقتباس': 'lock_quote',
+            'قفل الاقتباسات': 'lock_quote', 'فتح الاقتباسات': 'lock_quote',
         }
         if text in lock_map:
             is_lock = text.startswith('قفل')
