@@ -32,6 +32,8 @@ last_clean_time = {}
 
 private_states = {}
 
+last_messages = {}
+
 # ===========================
 # DATA HELPERS
 # ===========================
@@ -1257,7 +1259,7 @@ async def media_mod(msg, data, settings):
     uname = name(from_)
     reply = {'reply_to_message_id': msg_id}
 
-    if await is_tg_admin(chat_id, user_id):
+    if await is_admin_up(data, chat_id, user_id):
         return
 
     is_forward = msg.get('forward_from') or msg.get('forward_from_chat') or msg.get('forward_sender_name')
@@ -1421,7 +1423,7 @@ async def content_mod(msg, data, settings):
     m = mention(from_)
     reply = {'reply_to_message_id': msg_id}
 
-    if await is_tg_admin(chat_id, user_id):
+    if await is_admin_up(data, chat_id, user_id):
         return False
 
     uname = name(from_)
@@ -1473,23 +1475,34 @@ async def content_mod(msg, data, settings):
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع اللغة الروسية هنا .', reply)
         return True
 
-    if settings.get('lock_channel_usernames') or settings.get('lock_all_usernames'):
+    if settings.get('lock_all_usernames') and re.search(r'@\w+', text):
+        await delete(chat_id, msg_id)
+        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال اليوزرات هنا .', reply)
+        return True
+
+    if settings.get('lock_channel_usernames'):
         mentions = re.findall(r'@(\w+)', text)
         for uname_found in mentions:
             try:
                 ch = await api_call('getChat', {'chat_id': f'@{uname_found}'})
-                if ch:
-                    ch_type = ch.get('type', '')
-                    if settings.get('lock_all_usernames'):
-                        await delete(chat_id, msg_id)
-                        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال اليوزرات هنا .', reply)
-                        return True
-                    if settings.get('lock_channel_usernames') and ch_type in ['channel', 'supergroup', 'group']:
-                        await delete(chat_id, msg_id)
-                        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال يوزرات القنوات والمجموعات هنا .', reply)
-                        return True
+                if ch and ch.get('type', '') in ['channel', 'supergroup', 'group']:
+                    await delete(chat_id, msg_id)
+                    await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال يوزرات القنوات والمجموعات هنا .', reply)
+                    return True
             except:
                 pass
+
+    if settings['lock_repeat']:
+        cid_key = str(chat_id)
+        uid_key = str(user_id)
+        if cid_key not in last_messages:
+            last_messages[cid_key] = {}
+        last_msg = last_messages[cid_key].get(uid_key, '')
+        if text and text == last_msg:
+            await delete(chat_id, msg_id)
+            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع التكرار هنا .', reply)
+            return True
+        last_messages[cid_key][uid_key] = text
 
     if settings.get('clean_auto'):
         if settings.get('clean_numbers') and re.search(r'(?<!\d)\+?\d{9,12}(?!\d)', text):
