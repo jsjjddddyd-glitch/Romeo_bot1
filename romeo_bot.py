@@ -364,7 +364,7 @@ async def check_image_nsfw(file_id):
         session = await get_session()
         params = {
             'url': file_url,
-            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,face-attributes',
+            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,face-attributes,id-classify',
             'api_user': SIGHTENGINE_API_USER,
             'api_secret': SIGHTENGINE_API_SECRET
         }
@@ -394,6 +394,14 @@ async def check_image_nsfw(file_id):
             drug_classes = drug.get('classes', {})
             if drug_prob > 0.07 or any(v > 0.07 for v in drug_classes.values()):
                 return True, 'مواد ممنوعة'
+            id_doc = result.get('type', {})
+            id_classes = id_doc if isinstance(id_doc, dict) else {}
+            if (
+                id_classes.get('id_card', 0) > 0.5
+                or id_classes.get('passport', 0) > 0.5
+                or id_classes.get('driver_license', 0) > 0.5
+            ):
+                return True, 'وثيقة حكومية (هوية/جواز)'
             return False, None
     except Exception as e:
         print(f'NSFW check error: {e}')
@@ -807,7 +815,8 @@ menu_texts = {
         '• <b>زرف</b> (رد) - سرقة فلوس من شخص (كل 4 ساعات)\n'
         '• <b>حظ [مبلغ]</b> - المقامرة بمبلغ\n'
         '• <b>شراء [عدد] [اسم الشيء]</b> - شراء ممتلكات\n'
-        '• <b>ممتلكاتي</b> - عرض ممتلكاتك\n\n'
+        '• <b>ممتلكاتي</b> - عرض ممتلكاتك\n'
+        '• <b>تحويل [مبلغ] [رقم الحساب]</b> - تحويل فلوس لشخص آخر\n\n'
         '🔴 تعطيل الالعاب | تفعيل الالعاب'
     ),
 }
@@ -824,7 +833,7 @@ async def handle_callback(cb):
         if not w:
             await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '• الهمسه انتهت أو غير موجودة', 'show_alert': True})
             return
-        if user_id != w['recipient_id']:
+        if user_id != w['recipient_id'] and user_id != w['sender_id']:
             await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '• الهمسه لا تخصك', 'show_alert': True})
             return
         whisper_text = w.get('text') or ''
@@ -1225,6 +1234,51 @@ async def handle_update(update):
                     await send(user_id, '⚠️ أرسل نص الهمسه')
                 return
 
+        if text == 'info':
+            dev_check = await api_call('getChat', {'chat_id': f'@{DEVELOPER_USERNAME}'})
+            dev_id = (dev_check or {}).get('id')
+            if dev_id and user_id == dev_id:
+                data_info = load_data()
+                group_settings = data_info.get('group_settings', {})
+                adders_raw = data_info.get('bot_adders', {})
+                total_groups = len(group_settings)
+                lines_out = [f'📊 <b>إحصائيات بوت روميو</b>\n']
+                lines_out.append(f'🗂 عدد المجموعات: <b>{total_groups}</b>\n')
+                lines_out.append('─────────────────')
+                for gid in list(group_settings.keys()):
+                    try:
+                        ginfo = await get_chat(int(gid))
+                        if not ginfo:
+                            continue
+                        gtitle = ginfo.get('title', 'مجموعة مجهولة')
+                        gusername = ginfo.get('username')
+                        try:
+                            ginvite = await api_call('exportChatInviteLink', {'chat_id': int(gid)})
+                        except:
+                            ginvite = None
+                        glink = f'https://t.me/{gusername}' if gusername else (ginvite or 'لا يوجد رابط')
+                        adder_info = adders_raw.get(str(gid), {})
+                        adder_name_v = adder_info.get('name', 'غير معروف')
+                        adder_username_v = adder_info.get('username', '')
+                        adder_id_v = adder_info.get('id', '')
+                        adder_tag = f'@{adder_username_v}' if adder_username_v else f'id:{adder_id_v}'
+                        lines_out.append(
+                            f'\n📌 <b>{gtitle}</b>\n'
+                            f'🔗 {glink}\n'
+                            f'👤 المضيف: {adder_name_v} | {adder_tag}\n'
+                            f'🆔 آيدي المضيف: <code>{adder_id_v}</code>'
+                        )
+                    except:
+                        pass
+                full_text = '\n'.join(lines_out)
+                if len(full_text) > 4000:
+                    chunks = [full_text[i:i+4000] for i in range(0, len(full_text), 4000)]
+                    for chunk in chunks:
+                        await send(user_id, chunk)
+                else:
+                    await send(user_id, full_text)
+                return
+
         if text and text.startswith('/start'):
             await handle_start(msg)
         return
@@ -1343,6 +1397,18 @@ async def notify_developer_group_added(chat, added_by):
             f'  اليوزر: {"@" + adder_username if adder_username else "لا يوجد"}\n'
             f'  الآيدي: <code>{adder_id}</code>'
         )
+        try:
+            data_save = load_data()
+            if 'bot_adders' not in data_save:
+                data_save['bot_adders'] = {}
+            data_save['bot_adders'][str(chat_id)] = {
+                'name': adder_name,
+                'username': adder_username or '',
+                'id': adder_id,
+            }
+            save_data(data_save)
+        except:
+            pass
         try:
             dev_info = await api_call('getChat', {'chat_id': f'@{DEVELOPER_USERNAME}'})
             if dev_info:
@@ -1845,6 +1911,36 @@ async def process_cmd(msg, data, state, text, settings):
             await send(chat_id, f'⛔ {m} رتبتك <b>{user_rank}</b> وهذا الأمر مخصص لرتبة <b>{required_rank}</b> فقط', reply)
             return
 
+    # رتبتي / رتبته - مسموح للجميع بمن فيهم الأعضاء
+    if not settings['disable_service']:
+        if text in ['رتبة', 'رتبتي', 'رتب']:
+            if msg.get('reply_to_message'):
+                tf = msg['reply_to_message']['from']
+                rank = get_rank(data, chat_id, tf['id'])
+                mem2 = await get_chat_member(chat_id, tf['id'])
+                if mem2 and mem2.get('status') == 'creator':
+                    rank = 'مالك المجموعة'
+                elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
+                    rank = 'مشرف'
+                await send(chat_id, f'🏅 رتبة {name(tf)}: <b>{rank}</b>', reply)
+            else:
+                await send(chat_id, f'🏅 رتبتك: <b>{get_rank(data, chat_id, user_id)}</b>', reply)
+            return
+
+        if text in ['رتبته', 'رتبتها']:
+            if msg.get('reply_to_message'):
+                tf = msg['reply_to_message']['from']
+                rank = get_rank(data, chat_id, tf['id'])
+                mem2 = await get_chat_member(chat_id, tf['id'])
+                if mem2 and mem2.get('status') == 'creator':
+                    rank = 'مالك المجموعة'
+                elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
+                    rank = 'مشرف'
+                await send(chat_id, f'🏅 رتبة {name(tf)}: <b>{rank}</b>', reply)
+            else:
+                await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة رتبته', reply)
+            return
+
     if is_member_only:
         return
 
@@ -1928,34 +2024,6 @@ async def process_cmd(msg, data, state, text, settings):
                     await send(chat_id, f'👑 مالك المجموعة: {mention(of)}', reply)
                     return
             await send(chat_id, '⚠️ لم أجد مالك المجموعة', reply)
-            return
-
-        if text in ['رتبة', 'رتبتي', 'رتب']:
-            if msg.get('reply_to_message'):
-                tf = msg['reply_to_message']['from']
-                rank = get_rank(data, chat_id, tf['id'])
-                mem2 = await get_chat_member(chat_id, tf['id'])
-                if mem2 and mem2.get('status') == 'creator':
-                    rank = 'مالك المجموعة'
-                elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
-                    rank = 'مشرف'
-                await send(chat_id, f'🏅 رتبة {name(tf)}: <b>{rank}</b>', reply)
-            else:
-                await send(chat_id, f'🏅 رتبتك: <b>{get_rank(data, chat_id, user_id)}</b>', reply)
-            return
-
-        if text in ['رتبته', 'رتبتها']:
-            if msg.get('reply_to_message'):
-                tf = msg['reply_to_message']['from']
-                rank = get_rank(data, chat_id, tf['id'])
-                mem2 = await get_chat_member(chat_id, tf['id'])
-                if mem2 and mem2.get('status') == 'creator':
-                    rank = 'مالك المجموعة'
-                elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
-                    rank = 'مشرف'
-                await send(chat_id, f'🏅 رتبة {name(tf)}: <b>{rank}</b>', reply)
-            else:
-                await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة رتبته', reply)
             return
 
         if text == 'انشاء':
@@ -2652,6 +2720,202 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
         await send(chat_id,
             f'✅ {m} اشتريت <b>{qty} {item_key}</b> {emoji}\n\n'
             f'💸 دفعت: <b>{price:,}</b> دينار\n'
+            f'💳 رصيدك الجديد: <b>{acc["balance"]:,}</b> دينار',
+            reply
+        )
+        return
+
+    # ===========================
+    # تحويل الفلوس
+    # ===========================
+    transfer_match = re.match(r'^تحويل\s+(\d+)\s+(\d+)
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
+            return
+        props = acc.get('properties', {})
+        if not props:
+            await send(chat_id, f'😕 {m} ما عندك ممتلكات', reply)
+            return
+        lines = []
+        for item, qty in props.items():
+            emoji = ITEM_EMOJI.get(item, '🏷️')
+            lines.append(f'{emoji} {item}: <b>{qty}</b>')
+        await send(chat_id,
+            f'🏠 <b>ممتلكات {name(from_)}</b>\n\n' + '\n'.join(lines) +
+            f'\n\n💳 الرصيد: <b>{acc.get("balance", 0):,}</b> دينار',
+            reply
+        )
+        return
+
+# ===========================
+# STATE FLOW
+# ===========================
+
+async def handle_state(msg, data, state, user_state, text):
+    chat_id = msg['chat']['id']
+    msg_id = msg['message_id']
+    user_id = msg['from']['id']
+    cid = str(chat_id)
+    uid = str(user_id)
+    reply = {'reply_to_message_id': msg_id}
+
+    if user_state['step'] == 'await_clean_time':
+        if not text or not text.strip().isdigit():
+            await send(chat_id, '⚠️ أرسل رقم صحيح (عدد الدقائق)، مثال: 5', reply)
+            return
+        minutes = int(text.strip())
+        if minutes < 1:
+            minutes = 1
+        settings = get_settings(data, chat_id)
+        settings['clean_interval'] = minutes
+        del state[cid][uid]
+        save_state(state)
+        save_data(data)
+        clean_text, clean_keyboard = build_clean_menu(settings)
+        await send(chat_id, f'✅ تم تعيين وقت التنظيف: {minutes} {"دقيقة" if minutes == 1 else "دقائق"}', reply)
+        await send(chat_id, clean_text, {'reply_markup': clean_keyboard})
+        return
+
+    if user_state['step'] == 'await_name':
+        if not text:
+            await send(chat_id, '⚠️ أرسل اسم الرد:', reply)
+            return
+        state[cid][uid] = {'step': 'await_content', 'name': text}
+        await send(chat_id, '📦 أرسل محتوى الرد (نص، صورة، فيديو...):', reply)
+
+    elif user_state['step'] == 'await_content':
+        n = user_state['name']
+        if cid not in data['custom_replies']:
+            data['custom_replies'][cid] = {}
+        if msg.get('photo'):
+            fid = msg['photo'][-1]['file_id']
+            data['custom_replies'][cid][n] = {'type': 'photo', 'file_id': fid, 'caption': msg.get('caption', '')}
+        elif msg.get('video'):
+            data['custom_replies'][cid][n] = {'type': 'video', 'file_id': msg['video']['file_id'], 'caption': msg.get('caption', '')}
+        elif text:
+            data['custom_replies'][cid][n] = {'type': 'text', 'content': text}
+        else:
+            await send(chat_id, '⚠️ أرسل نص أو صورة أو فيديو', reply)
+            return
+        del state[cid][uid]
+        await send(chat_id, f'✅ تم إضافة الرد <b>{n}</b> بنجاح 🌹', reply)
+
+    elif user_state['step'] == 'await_delete_name':
+        if not text:
+            await send(chat_id, '⚠️ أرسل اسم الرد:', reply)
+            return
+        if data['custom_replies'].get(cid, {}).get(text):
+            del data['custom_replies'][cid][text]
+            await send(chat_id, f'✅ تم حذف الرد <b>{text}</b>', reply)
+        else:
+            await send(chat_id, f'⚠️ لم أجد ردًا باسم <b>{text}</b>', reply)
+        del state[cid][uid]
+
+    elif user_state['step'] == 'await_lock_cmd_name':
+        if not text:
+            await send(chat_id, '⚠️ أرسل اسم الأمر:', reply)
+            return
+        state[cid][uid] = {'step': 'await_lock_cmd_rank', 'cmd_name': text}
+        rank_buttons = [
+            [{'text': '1 - مالك أساسي', 'callback_data': f'lock_cmd_rank:{text}:مالك أساسي'}],
+            [{'text': '2 - مالك', 'callback_data': f'lock_cmd_rank:{text}:مالك'}],
+            [{'text': '3 - مدير', 'callback_data': f'lock_cmd_rank:{text}:مدير'}],
+            [{'text': '4 - ادمن', 'callback_data': f'lock_cmd_rank:{text}:ادمن'}],
+            [{'text': '5 - مميز', 'callback_data': f'lock_cmd_rank:{text}:مميز'}],
+        ]
+        await send(chat_id,
+            f'‹ حسناً عزيزي اختار نوع الرتبة :\n\n'
+            f'- سيتم وضع امر ‹ <b>{text}</b> ‹ له بس',
+            {'reply_markup': {'inline_keyboard': rank_buttons}, 'reply_to_message_id': msg_id})
+
+    elif user_state['step'] == 'await_add_cmd_real':
+        if not text:
+            await send(chat_id, '⚠️ أرسل الأمر الحقيقي:', reply)
+            return
+        state[cid][uid] = {'step': 'await_add_cmd_alias', 'real_cmd': text}
+        await send(chat_id, f'✏️ أرسل الأمر المراد إضافته (الاسم البديل):', reply)
+
+    elif user_state['step'] == 'await_add_cmd_alias':
+        real_cmd = user_state.get('real_cmd', '')
+        if not text:
+            await send(chat_id, '⚠️ أرسل الاسم البديل للأمر:', reply)
+            return
+        if 'custom_commands' not in data:
+            data['custom_commands'] = {}
+        if cid not in data['custom_commands']:
+            data['custom_commands'][cid] = {}
+        data['custom_commands'][cid][text] = real_cmd
+        del state[cid][uid]
+        await send(chat_id, f'✅ تم حفظ الامر <b>{real_cmd}</b> بامر <b>{text}</b> بنجاح', reply)
+
+# ===========================
+# HTTP SERVER
+# ===========================
+
+PORT = int(os.environ.get('PORT', 3000))
+
+async def webhook_handler(request):
+    if request.method == 'POST' and request.path == '/webhook':
+        try:
+            body = await request.json()
+            if 'my_chat_member' in body:
+                asyncio.create_task(handle_my_chat_member(body['my_chat_member']))
+            else:
+                asyncio.create_task(handle_update(body))
+        except Exception as e:
+            print(f'Webhook error: {e}')
+        return web.Response(text='OK', status=200)
+    return web.Response(text='Romeo Bot is running 🌹', status=200)
+
+async def main():
+    app = web.Application()
+    app.router.add_route('*', '/{tail:.*}', webhook_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    print(f'Romeo Bot running on port {PORT}')
+    asyncio.create_task(auto_clean_loop())
+    await asyncio.Event().wait()
+
+if __name__ == '__main__':
+    asyncio.run(main()), text)
+    if transfer_match:
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
+            return
+        amount = int(transfer_match.group(1))
+        target_account_number = transfer_match.group(2)
+        if amount <= 0:
+            await send(chat_id, '⚠️ المبلغ يجب أن يكون أكبر من صفر', reply)
+            return
+        if acc.get('balance', 0) < amount:
+            await send(chat_id, f'💸 فلوسك ما تكفي يا فكر\n💳 رصيدك: <b>{acc.get("balance", 0):,}</b> دينار', reply)
+            return
+        cid_str = str(chat_id)
+        target_uid = None
+        target_acc = None
+        if cid_str in data.get('bank_accounts', {}):
+            for uid_key, acc_data in data['bank_accounts'][cid_str].items():
+                if acc_data.get('account_number') == target_account_number:
+                    target_uid = uid_key
+                    target_acc = acc_data
+                    break
+        if not target_acc:
+            await send(chat_id, f'⚠️ رقم الحساب <b>{target_account_number}</b> غير موجود', reply)
+            return
+        if target_uid == str(user_id):
+            await send(chat_id, '⚠️ ما تقدر تحول لحسابك نفسه', reply)
+            return
+        acc['balance'] -= amount
+        target_acc['balance'] = target_acc.get('balance', 0) + amount
+        save_data(data)
+        await send(chat_id,
+            f'✅ <b>تم التحويل بنجاح</b>\n\n'
+            f'💸 المبلغ المحول: <b>{amount:,}</b> دينار\n'
+            f'📤 إلى حساب: <code>{target_account_number}</code>\n'
             f'💳 رصيدك الجديد: <b>{acc["balance"]:,}</b> دينار',
             reply
         )
