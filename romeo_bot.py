@@ -1941,9 +1941,6 @@ async def process_cmd(msg, data, state, text, settings):
                 await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة رتبته', reply)
             return
 
-    if is_member_only:
-        return
-
     # التنظيف - للمالك فقط
     if text == 'التنظيف':
         if not await is_group_creator(chat_id, user_id):
