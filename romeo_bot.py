@@ -442,10 +442,9 @@ async def check_image_nsfw(file_id):
             return False, None
         file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
         session = await get_session()
-        # نماذج صحيحة فقط - id-document غير صالح ويُفشل الطلب
         params = {
             'url': file_url,
-            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,type',
+            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content',
             'api_user': SIGHTENGINE_API_USER,
             'api_secret': SIGHTENGINE_API_SECRET
         }
@@ -486,29 +485,44 @@ async def check_image_nsfw(file_id):
             gore = result.get('gore', {})
             if gore.get('prob', 0) > 0.04:
                 return True, 'محتوى عنيف (دماء)'
-            id_doc = result.get('type', {})
-            id_classes = id_doc if isinstance(id_doc, dict) else {}
-            if (
-                id_classes.get('id_card', 0) > 0.4
-                or id_classes.get('passport', 0) > 0.4
-                or id_classes.get('driver_license', 0) > 0.4
-            ):
-                return True, 'وثيقة حكومية (هوية/جواز)'
+            # رصد الهويات عبر تحليل النص المكتشف في الصورة
             text_content = result.get('text', {})
             if isinstance(text_content, dict):
+                detected_items = text_content.get('detected', [])
                 detected_text = ' '.join([
-                    t.get('content', '') for t in text_content.get('detected', [])
+                    t.get('content', '') for t in detected_items
                 ]).lower()
-                id_keywords = [
-                    'passport', 'republic', 'nationality', 'date of birth', 'expiry',
-                    'identity', 'surname', 'given name', 'personal number', 'place of birth',
-                    'driver', 'license', 'national id', 'identification', 'mrz', 'citizen',
-                    'republic of', 'dowod', 'osobisty', 'personalausweis', 'ausweis',
-                    'bundesrepublik', 'republique', 'passeport', 'carte nationale',
-                    'cedula', 'dni', 'نمرة الوثيقة', 'رقم الهوية', 'الجنسية', 'تاريخ الميلاد',
+                # كلمات قاطعة تكفي وحدها للكشف (كلمة واحدة = هوية)
+                strong_id_keywords = [
+                    'passport', 'passeport', 'reisepass', 'passaporto', 'pasaporte',
+                    'national id', 'national identity', 'nationalausweis',
+                    'driver license', "driver's license", 'driving licence',
+                    'identity card', 'carte nationale', 'carte d\'identite',
+                    'personalausweis', 'bundesrepublik', 'republique francaise',
+                    'cedula de identidad', 'cedula ciudadania',
+                    'رقم الهوية', 'هوية وطنية', 'بطاقة هوية',
+                    'جواز السفر', 'رخصة القيادة', 'بطاقة شخصية',
+                    'الرقم القومي', 'رقم جواز', 'وثيقة سفر',
+                    'kingdom of saudi', 'المملكة العربية', 'الجمهورية العربية',
+                    'جمهورية العراق', 'جمهورية مصر', 'دولة الإمارات',
+                    'جمهورية تونس', 'المملكة المغربية', 'الجمهورية الجزائرية',
                 ]
-                id_keyword_count = sum(1 for kw in id_keywords if kw in detected_text)
-                if id_keyword_count >= 2:
+                for kw in strong_id_keywords:
+                    if kw in detected_text:
+                        return True, 'وثيقة حكومية (هوية/جواز)'
+                # كلمات تراكمية - يكفي وجود 2 منها
+                soft_id_keywords = [
+                    'republic', 'nationality', 'date of birth', 'expiry', 'expires',
+                    'surname', 'given name', 'given names', 'personal number',
+                    'place of birth', 'identification', 'mrz', 'citizen',
+                    'document no', 'doc no', 'document number', 'sex / sexe',
+                    'dowod', 'osobisty', 'ausweis', 'republique', 'dni',
+                    'الجنسية', 'تاريخ الميلاد', 'تاريخ الانتهاء', 'تاريخ الإصدار',
+                    'مكان الميلاد', 'نمرة الوثيقة', 'رقم الوثيقة',
+                    'الاسم الأول', 'اسم الأب', 'الاسم الكامل',
+                ]
+                soft_count = sum(1 for kw in soft_id_keywords if kw in detected_text)
+                if soft_count >= 2:
                     return True, 'وثيقة حكومية (هوية/جواز)'
             return False, None
     except Exception as e:
