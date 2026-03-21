@@ -2728,7 +2728,51 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
     # ===========================
     # تحويل الفلوس
     # ===========================
-    transfer_match = re.match(r'^تحويل\s+(\d+)\s+(\d+)
+    text_parts = text.split()
+    if len(text_parts) == 3 and text_parts[0] == 'تحويل' and text_parts[1].isdigit() and text_parts[2].isdigit():
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
+            return
+        amount = int(text_parts[1])
+        target_account_number = text_parts[2]
+        if amount <= 0:
+            await send(chat_id, '⚠️ المبلغ يجب أن يكون أكبر من صفر', reply)
+            return
+        if acc.get('balance', 0) < amount:
+            await send(chat_id, f'💸 فلوسك ما تكفي يا فكر\n💳 رصيدك: <b>{acc.get("balance", 0):,}</b> دينار', reply)
+            return
+        cid_str = str(chat_id)
+        target_uid = None
+        target_acc = None
+        if cid_str in data.get('bank_accounts', {}):
+            for uid_key, acc_data in data['bank_accounts'][cid_str].items():
+                if acc_data.get('account_number') == target_account_number:
+                    target_uid = uid_key
+                    target_acc = acc_data
+                    break
+        if not target_acc:
+            await send(chat_id, f'⚠️ رقم الحساب <b>{target_account_number}</b> غير موجود', reply)
+            return
+        if target_uid == str(user_id):
+            await send(chat_id, '⚠️ ما تقدر تحول لحسابك نفسه', reply)
+            return
+        acc['balance'] -= amount
+        target_acc['balance'] = target_acc.get('balance', 0) + amount
+        save_data(data)
+        await send(chat_id,
+            f'✅ <b>تم التحويل بنجاح</b>\n\n'
+            f'💸 المبلغ المحول: <b>{amount:,}</b> دينار\n'
+            f'📤 إلى حساب: <code>{target_account_number}</code>\n'
+            f'💳 رصيدك الجديد: <b>{acc["balance"]:,}</b> دينار',
+            reply
+        )
+        return
+
+    # ===========================
+    # ممتلكاتي
+    # ===========================
+    if text == 'ممتلكاتي':
         acc = get_bank(data, chat_id, user_id)
         if not acc:
             await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
@@ -2880,69 +2924,7 @@ async def main():
     await asyncio.Event().wait()
 
 if __name__ == '__main__':
-    asyncio.run(main()), text)
-    if transfer_match:
-        acc = get_bank(data, chat_id, user_id)
-        if not acc:
-            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
-            return
-        amount = int(transfer_match.group(1))
-        target_account_number = transfer_match.group(2)
-        if amount <= 0:
-            await send(chat_id, '⚠️ المبلغ يجب أن يكون أكبر من صفر', reply)
-            return
-        if acc.get('balance', 0) < amount:
-            await send(chat_id, f'💸 فلوسك ما تكفي يا فكر\n💳 رصيدك: <b>{acc.get("balance", 0):,}</b> دينار', reply)
-            return
-        cid_str = str(chat_id)
-        target_uid = None
-        target_acc = None
-        if cid_str in data.get('bank_accounts', {}):
-            for uid_key, acc_data in data['bank_accounts'][cid_str].items():
-                if acc_data.get('account_number') == target_account_number:
-                    target_uid = uid_key
-                    target_acc = acc_data
-                    break
-        if not target_acc:
-            await send(chat_id, f'⚠️ رقم الحساب <b>{target_account_number}</b> غير موجود', reply)
-            return
-        if target_uid == str(user_id):
-            await send(chat_id, '⚠️ ما تقدر تحول لحسابك نفسه', reply)
-            return
-        acc['balance'] -= amount
-        target_acc['balance'] = target_acc.get('balance', 0) + amount
-        save_data(data)
-        await send(chat_id,
-            f'✅ <b>تم التحويل بنجاح</b>\n\n'
-            f'💸 المبلغ المحول: <b>{amount:,}</b> دينار\n'
-            f'📤 إلى حساب: <code>{target_account_number}</code>\n'
-            f'💳 رصيدك الجديد: <b>{acc["balance"]:,}</b> دينار',
-            reply
-        )
-        return
-
-    # ===========================
-    # ممتلكاتي
-    # ===========================
-    if text == 'ممتلكاتي':
-        acc = get_bank(data, chat_id, user_id)
-        if not acc:
-            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
-            return
-        props = acc.get('properties', {})
-        if not props:
-            await send(chat_id, f'😕 {m} ما عندك ممتلكات', reply)
-            return
-        lines = []
-        for item, qty in props.items():
-            emoji = ITEM_EMOJI.get(item, '🏷️')
-            lines.append(f'{emoji} {item}: <b>{qty}</b>')
-        await send(chat_id,
-            f'🏠 <b>ممتلكات {name(from_)}</b>\n\n' + '\n'.join(lines) +
-            f'\n\n💳 الرصيد: <b>{acc.get("balance", 0):,}</b> دينار',
-            reply
-        )
-        return
+    asyncio.run(main())
 
 # ===========================
 # STATE FLOW
