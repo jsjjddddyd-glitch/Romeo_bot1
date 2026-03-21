@@ -375,7 +375,16 @@ async def check_image_nsfw(file_id):
             if result.get('status') != 'success':
                 return False, None
             nudity = result.get('nudity', {})
-            if nudity.get('sexual_activity', 0) > 0.5 or nudity.get('sexual_display', 0) > 0.5 or nudity.get('erotica', 0) > 0.6:
+            suggestive_classes = nudity.get('suggestive_classes', {})
+            if (
+                nudity.get('sexual_activity', 0) > 0.2
+                or nudity.get('sexual_display', 0) > 0.2
+                or nudity.get('erotica', 0) > 0.25
+                or nudity.get('very_suggestive', 0) > 0.35
+                or suggestive_classes.get('suggestive_focus_body_part', 0) > 0.4
+                or suggestive_classes.get('lingerie', 0) > 0.5
+                or suggestive_classes.get('cleavage', 0) > 0.6
+            ):
                 return True, 'إباحي'
             weapon = result.get('weapon', {})
             if weapon.get('classes', {}).get('firearm', 0) > 0.7 or weapon.get('classes', {}).get('knife', 0) > 0.8:
@@ -383,7 +392,7 @@ async def check_image_nsfw(file_id):
             drug = result.get('recreational_drug', {})
             drug_prob = drug.get('prob', 0)
             drug_classes = drug.get('classes', {})
-            if drug_prob > 0.25 or any(v > 0.2 for v in drug_classes.values()):
+            if drug_prob > 0.07 or any(v > 0.07 for v in drug_classes.values()):
                 return True, 'مواد ممنوعة'
             return False, None
     except Exception as e:
@@ -419,7 +428,16 @@ async def check_video_nsfw(file_id):
             frames = result.get('data', {}).get('frames', [])
             for frame in frames:
                 nudity = frame.get('nudity', {})
-                if nudity.get('sexual_activity', 0) > 0.5 or nudity.get('sexual_display', 0) > 0.5 or nudity.get('erotica', 0) > 0.6:
+                suggestive_classes = nudity.get('suggestive_classes', {})
+                if (
+                    nudity.get('sexual_activity', 0) > 0.2
+                    or nudity.get('sexual_display', 0) > 0.2
+                    or nudity.get('erotica', 0) > 0.25
+                    or nudity.get('very_suggestive', 0) > 0.35
+                    or suggestive_classes.get('suggestive_focus_body_part', 0) > 0.4
+                    or suggestive_classes.get('lingerie', 0) > 0.5
+                    or suggestive_classes.get('cleavage', 0) > 0.6
+                ):
                     return True, 'إباحي'
                 weapon = frame.get('weapon', {})
                 if weapon.get('classes', {}).get('firearm', 0) > 0.7 or weapon.get('classes', {}).get('knife', 0) > 0.8:
@@ -427,7 +445,7 @@ async def check_video_nsfw(file_id):
                 drug = frame.get('recreational_drug', {})
                 drug_prob = drug.get('prob', 0)
                 drug_classes = drug.get('classes', {})
-                if drug_prob > 0.25 or any(v > 0.2 for v in drug_classes.values()):
+                if drug_prob > 0.07 or any(v > 0.07 for v in drug_classes.values()):
                     return True, 'مواد ممنوعة'
             return False, None
     except Exception as e:
@@ -799,6 +817,24 @@ async def handle_callback(cb):
     msg_id = cb['message']['message_id']
     user_id = cb['from']['id']
     data_cb = cb['data']
+
+    if data_cb.startswith('vw:'):
+        whisper_id = data_cb[3:]
+        w = whispers.get(whisper_id)
+        if not w:
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '• الهمسه انتهت أو غير موجودة', 'show_alert': True})
+            return
+        if user_id != w['recipient_id']:
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '• الهمسه لا تخصك', 'show_alert': True})
+            return
+        whisper_text = w.get('text') or ''
+        if len(whisper_text) > 190:
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '📩 الهمسه طويلة، سيتم إرسالها خاص', 'show_alert': False})
+            await api_call('sendMessage', {'chat_id': user_id, 'text': f'🤫 <b>همسة من {w.get("sender_name", "شخص ما")}:</b>\n\n{whisper_text}', 'parse_mode': 'HTML'})
+        else:
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': f'🤫 {whisper_text}', 'show_alert': True})
+        return
+
     await answer_cb(cb['id'])
 
     if data_cb in menu_texts:
@@ -1086,17 +1122,6 @@ async def handle_callback(cb):
             f'✅ تم قفل امر <b>{cmd_name}</b> للرتبة <b>{rank_choice}</b> فقط\nولا يمكن استعمال هذه الميزه للرتب اقل من <b>{rank_choice}</b>')
         return
 
-    if data_cb.startswith('vw:'):
-        whisper_id = data_cb[3:]
-        w = whispers.get(whisper_id)
-        if not w:
-            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '• الهمسه انتهت أو غير موجودة', 'show_alert': True})
-            return
-        if user_id != w['recipient_id']:
-            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '• الهمسه لا تخصك', 'show_alert': True})
-            return
-        await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': w.get('text', ''), 'show_alert': True})
-        return
 
 # ===========================
 # MESSAGE HANDLER
