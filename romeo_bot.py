@@ -5,6 +5,8 @@ import re
 import asyncio
 import random
 import aiohttp
+import psycopg2
+import psycopg2.extras
 from aiohttp import web
 from datetime import datetime
 
@@ -12,6 +14,7 @@ TOKEN = '8785959754:AAFWbDWNkBeT42CzqNn_m1g7eqGFp6XdBps'
 API = f'https://api.telegram.org/bot{TOKEN}'
 DATA_FILE = './data.json'
 STATE_FILE = './state.json'
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
 
 SIGHTENGINE_API_USER = '130043340'
 SIGHTENGINE_API_SECRET = 'RFozDT5M3VYmccC2rcArKqnMPWPCKJfE'
@@ -48,29 +51,105 @@ async def get_bot_username():
 # DATA HELPERS
 # ===========================
 
+def _get_db_conn():
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
+
+def init_db():
+    if not DATABASE_URL:
+        return
+    try:
+        conn = _get_db_conn()
+        cur = conn.cursor()
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS bot_storage (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        ''')
+        conn.commit()
+        cur.close()
+        conn.close()
+        print('Database initialized successfully')
+    except Exception as e:
+        print(f'Database init error: {e}')
+
 def load_data():
+    if DATABASE_URL:
+        try:
+            conn = _get_db_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM bot_storage WHERE key = 'data'")
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            if row:
+                return json.loads(row[0])
+        except Exception as e:
+            print(f'DB load_data error: {e}')
     try:
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except:
-        return {
-            'custom_replies': {}, 'group_settings': {},
-            'user_ranks': {}, 'user_warnings': {},
-            'bank_accounts': {}, 'games_state': {}
-        }
+        pass
+    return {
+        'custom_replies': {}, 'group_settings': {},
+        'user_ranks': {}, 'user_warnings': {},
+        'bank_accounts': {}, 'games_state': {}
+    }
 
 def save_data(d):
+    if DATABASE_URL:
+        try:
+            conn = _get_db_conn()
+            cur = conn.cursor()
+            cur.execute('''
+                INSERT INTO bot_storage (key, value) VALUES ('data', %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            ''', (json.dumps(d, ensure_ascii=False),))
+            conn.commit()
+            cur.close()
+            conn.close()
+            return
+        except Exception as e:
+            print(f'DB save_data error: {e}')
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
 
 def load_state():
+    if DATABASE_URL:
+        try:
+            conn = _get_db_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM bot_storage WHERE key = 'state'")
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            if row:
+                return json.loads(row[0])
+        except Exception as e:
+            print(f'DB load_state error: {e}')
     try:
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except:
-        return {}
+        pass
+    return {}
 
 def save_state(s):
+    if DATABASE_URL:
+        try:
+            conn = _get_db_conn()
+            cur = conn.cursor()
+            cur.execute('''
+                INSERT INTO bot_storage (key, value) VALUES ('state', %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            ''', (json.dumps(s, ensure_ascii=False),))
+            conn.commit()
+            cur.close()
+            conn.close()
+            return
+        except Exception as e:
+            print(f'DB save_state error: {e}')
     with open(STATE_FILE, 'w', encoding='utf-8') as f:
         json.dump(s, f, ensure_ascii=False)
 
@@ -363,9 +442,10 @@ async def check_image_nsfw(file_id):
             return False, None
         file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
         session = await get_session()
+        # نماذج صحيحة فقط - id-document غير صالح ويُفشل الطلب
         params = {
             'url': file_url,
-            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,type,id-document',
+            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,type',
             'api_user': SIGHTENGINE_API_USER,
             'api_secret': SIGHTENGINE_API_SECRET
         }
@@ -406,27 +486,14 @@ async def check_image_nsfw(file_id):
             gore = result.get('gore', {})
             if gore.get('prob', 0) > 0.04:
                 return True, 'محتوى عنيف (دماء)'
-            # رصد الوثائق الحكومية والهويات - نموذج id-document (الصحيح)
-            id_document = result.get('id-document', {})
-            if isinstance(id_document, dict):
-                id_classes_new = id_document.get('classes', {})
-                if (
-                    id_classes_new.get('id_card', 0) > 0.15
-                    or id_classes_new.get('passport', 0) > 0.15
-                    or id_classes_new.get('driver_license', 0) > 0.15
-                    or id_document.get('prob', 0) > 0.15
-                ):
-                    return True, 'وثيقة حكومية (هوية/جواز)'
-            # نموذج type احتياطي - بعض الصور تأتي منه
-            type_data = result.get('type', {})
-            if isinstance(type_data, dict):
-                if (
-                    type_data.get('id_card', 0) > 0.15
-                    or type_data.get('passport', 0) > 0.15
-                    or type_data.get('driver_license', 0) > 0.15
-                ):
-                    return True, 'وثيقة حكومية (هوية/جواز)'
-            # فحص نص الصورة - الهويات تحتوي على نصوص مميزة
+            id_doc = result.get('type', {})
+            id_classes = id_doc if isinstance(id_doc, dict) else {}
+            if (
+                id_classes.get('id_card', 0) > 0.4
+                or id_classes.get('passport', 0) > 0.4
+                or id_classes.get('driver_license', 0) > 0.4
+            ):
+                return True, 'وثيقة حكومية (هوية/جواز)'
             text_content = result.get('text', {})
             if isinstance(text_content, dict):
                 detected_text = ' '.join([
@@ -3072,6 +3139,7 @@ async def webhook_handler(request):
     return web.Response(text='Romeo Bot is running 🌹', status=200)
 
 async def main():
+    init_db()
     app = web.Application()
     app.router.add_route('*', '/{tail:.*}', webhook_handler)
     runner = web.AppRunner(app)
@@ -3206,6 +3274,7 @@ async def webhook_handler(request):
     return web.Response(text='Romeo Bot is running 🌹', status=200)
 
 async def main():
+    init_db()
     app = web.Application()
     app.router.add_route('*', '/{tail:.*}', webhook_handler)
     runner = web.AppRunner(app)
