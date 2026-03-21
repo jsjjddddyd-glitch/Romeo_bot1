@@ -34,6 +34,16 @@ private_states = {}
 
 last_messages = {}
 
+whispers = {}
+BOT_USERNAME = None
+
+async def get_bot_username():
+    global BOT_USERNAME
+    if not BOT_USERNAME:
+        bot_info = await api_call('getMe', {})
+        BOT_USERNAME = (bot_info or {}).get('username', '')
+    return BOT_USERNAME
+
 # ===========================
 # DATA HELPERS
 # ===========================
@@ -243,6 +253,18 @@ def get_game_state(data, chat_id):
         }
     return data['games_state'][cid]['kursi']
 
+def get_ahkam_state(data, chat_id):
+    cid = str(chat_id)
+    if 'games_state' not in data:
+        data['games_state'] = {}
+    if cid not in data['games_state']:
+        data['games_state'][cid] = {}
+    if 'ahkam' not in data['games_state'][cid]:
+        data['games_state'][cid]['ahkam'] = {
+            'active': False, 'waiting': False, 'starter_id': None, 'players': []
+        }
+    return data['games_state'][cid]['ahkam']
+
 # ===========================
 # TELEGRAM API
 # ===========================
@@ -359,11 +381,57 @@ async def check_image_nsfw(file_id):
             if weapon.get('classes', {}).get('firearm', 0) > 0.7 or weapon.get('classes', {}).get('knife', 0) > 0.8:
                 return True, 'أسلحة'
             drug = result.get('recreational_drug', {})
-            if drug.get('prob', 0) > 0.4:
+            drug_prob = drug.get('prob', 0)
+            drug_classes = drug.get('classes', {})
+            if drug_prob > 0.25 or any(v > 0.2 for v in drug_classes.values()):
                 return True, 'مواد ممنوعة'
             return False, None
     except Exception as e:
         print(f'NSFW check error: {e}')
+        return False, None
+
+
+async def check_video_nsfw(file_id):
+    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
+        return False, None
+    try:
+        file_info = await get_file(file_id)
+        if not file_info:
+            return False, None
+        file_path = file_info.get('file_path')
+        if not file_path:
+            return False, None
+        file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
+        session = await get_session()
+        params = {
+            'url': file_url,
+            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0',
+            'interval': '0.5',
+            'api_user': SIGHTENGINE_API_USER,
+            'api_secret': SIGHTENGINE_API_SECRET
+        }
+        async with session.get('https://api.sightengine.com/1.0/video/check-sync.json', params=params) as res:
+            if res.status != 200:
+                return False, None
+            result = await res.json()
+            if result.get('status') != 'success':
+                return False, None
+            frames = result.get('data', {}).get('frames', [])
+            for frame in frames:
+                nudity = frame.get('nudity', {})
+                if nudity.get('sexual_activity', 0) > 0.5 or nudity.get('sexual_display', 0) > 0.5 or nudity.get('erotica', 0) > 0.6:
+                    return True, 'إباحي'
+                weapon = frame.get('weapon', {})
+                if weapon.get('classes', {}).get('firearm', 0) > 0.7 or weapon.get('classes', {}).get('knife', 0) > 0.8:
+                    return True, 'أسلحة'
+                drug = frame.get('recreational_drug', {})
+                drug_prob = drug.get('prob', 0)
+                drug_classes = drug.get('classes', {})
+                if drug_prob > 0.25 or any(v > 0.2 for v in drug_classes.values()):
+                    return True, 'مواد ممنوعة'
+            return False, None
+    except Exception as e:
+        print(f'Video NSFW check error: {e}')
         return False, None
 
 # ===========================
@@ -661,6 +729,8 @@ menu_texts = {
         '• <b>رتبة</b> (رد) - رتبة الشخص المردود عليه\n'
         '• <b>رتبته</b> (رد) - رتبة شخص\n'
         '• <b>انشاء</b> - تاريخ إنشاء الحساب\n\n'
+        '🤫 <b>الهمسة:</b>\n'
+        '• <b>همسه / اهمس</b> (رد على رسالة شخص) - ترسل همسة خاصة له فقط\n\n'
         '🎵 <b>اليوتيوب:</b>\n'
         '• <b>يوت [اسم الأغنية]</b> - البحث عن أغنية وإرسالها\n'
         '• تعطيل اليوتيوب | تفعيل اليوتيوب'
@@ -704,6 +774,11 @@ menu_texts = {
         '• اكتب <b>كرسي</b> لبدء اللعبة وتسجيل نفسك\n'
         '• الأعضاء يرسلون <b>انا</b> للانضمام\n'
         '• من بدأ اللعبة يرسل <b>نعم</b> لبدء الأسئلة\n'
+        '• من بدأ اللعبة يرسل <b>انهاء</b> لإنهاء اللعبة\n\n'
+        '<b>⚖️ لعبة الأحكام:</b>\n'
+        '• اكتب <b>احكام</b> لبدء اللعبة وتسجيل نفسك\n'
+        '• الأعضاء يرسلون <b>انا</b> للانضمام\n'
+        '• من بدأ اللعبة يرسل <b>نعم</b> ليختار البوت حاكم ومحكوم\n'
         '• من بدأ اللعبة يرسل <b>انهاء</b> لإنهاء اللعبة\n\n'
         '<b>🏦 لعبة ممتلكاتي:</b>\n'
         '• <b>انشاء حساب بنكي</b> - فتح حساب بنكي\n'
@@ -1011,6 +1086,18 @@ async def handle_callback(cb):
             f'✅ تم قفل امر <b>{cmd_name}</b> للرتبة <b>{rank_choice}</b> فقط\nولا يمكن استعمال هذه الميزه للرتب اقل من <b>{rank_choice}</b>')
         return
 
+    if data_cb.startswith('vw:'):
+        whisper_id = data_cb[3:]
+        w = whispers.get(whisper_id)
+        if not w:
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '• الهمسه انتهت أو غير موجودة', 'show_alert': True})
+            return
+        if user_id != w['recipient_id']:
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '• الهمسه لا تخصك', 'show_alert': True})
+            return
+        await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': w.get('text', ''), 'show_alert': True})
+        return
+
 # ===========================
 # MESSAGE HANDLER
 # ===========================
@@ -1051,21 +1138,24 @@ async def handle_update(update):
                 if text:
                     group_chat_id = pstate['group_chat_id']
                     chosen_name = pstate.get('chosen_name', 'الشخص المختار')
+                    chosen_id = pstate.get('chosen_id')
                     data = load_data()
                     game = get_game_state(data, group_chat_id)
+                    bot_un = await get_bot_username()
                     if game.get('active') and game.get('chosen_id'):
                         if game['questions_count'] < 50:
                             game['questions_count'] += 1
                             save_data(data)
                             remaining = 50 - game['questions_count']
+                            chosen_mention = f'<a href="tg://user?id={chosen_id}">{chosen_name}</a>'
                             await send(group_chat_id,
-                                f'❓ السؤال إليك {chosen_name} .\n\n'
+                                f'❓ السؤال إليك {chosen_mention} .\n\n'
                                 f'<b>{text}</b>\n\n'
                                 f'📊 السؤال {game["questions_count"]}/50 | المتبقي: {remaining}',
                                 {
                                     'reply_markup': {
                                         'inline_keyboard': [[
-                                            {'text': '❓ اسالوه هنا', 'callback_data': f'kursi_ask:{group_chat_id}'}
+                                            {'text': '❓ اسالوه هنا', 'url': f'https://t.me/{bot_un}?start=kursi_{group_chat_id}'}
                                         ]]
                                     }
                                 }
@@ -1080,6 +1170,34 @@ async def handle_update(update):
                         await send(user_id, '⚠️ اللعبة انتهت')
                 else:
                     await send(user_id, '⚠️ أرسل نص السؤال فقط')
+                return
+
+            if pstate.get('step') == 'await_whisper_text':
+                if text:
+                    whisper_id = pstate.get('whisper_id')
+                    w = whispers.get(whisper_id)
+                    if not w:
+                        del private_states[uid_str]
+                        await send(user_id, '⚠️ الهمسه انتهت')
+                        return
+                    w['text'] = text
+                    del private_states[uid_str]
+                    group_chat_id = w['group_chat_id']
+                    recipient_mention = f'<a href="tg://user?id={w["recipient_id"]}">{w["recipient_name"]}</a>'
+                    sender_mention = f'<a href="tg://user?id={w["sender_id"]}">{w["sender_name"]}</a>'
+                    await send(group_chat_id,
+                        f'‹‹ الهمسه لـ ‹‹ {recipient_mention}\n‹‹ من ‹‹ {sender_mention}\n─',
+                        {
+                            'reply_markup': {
+                                'inline_keyboard': [[
+                                    {'text': 'رؤية الهمسة', 'callback_data': f'vw:{whisper_id}'}
+                                ]]
+                            }
+                        }
+                    )
+                    await send(user_id, '✅ تم إرسال الهمسه!')
+                else:
+                    await send(user_id, '⚠️ أرسل نص الهمسه')
                 return
 
         if text and text.startswith('/start'):
@@ -1231,7 +1349,55 @@ async def handle_my_chat_member(update):
 async def handle_start(msg):
     chat_id = msg['chat']['id']
     from_ = msg['from']
+    user_id = from_['id']
     user_name = name(from_)
+    raw_text = (msg.get('text') or '').strip()
+    parts = raw_text.split(' ', 1)
+    param = parts[1] if len(parts) > 1 else ''
+
+    if param.startswith('kursi_'):
+        try:
+            group_chat_id = int(param[6:])
+            data = load_data()
+            game = get_game_state(data, group_chat_id)
+            if not game.get('active') or not game.get('chosen_id'):
+                await send(chat_id, '⚠️ اللعبة انتهت أو لا توجد لعبة نشطة الآن')
+                return
+            if game['questions_count'] >= 50:
+                await send(chat_id, '⚠️ انتهت الأسئلة المسموحة (50 سؤال)')
+                return
+            private_states[str(user_id)] = {
+                'step': 'await_kursi_question',
+                'group_chat_id': group_chat_id,
+                'chosen_id': game['chosen_id'],
+                'chosen_name': game.get('chosen_name', 'الشخص المختار')
+            }
+            await send(chat_id,
+                f'✏️ أرسل سؤالك الآن\n\n'
+                f'سيُرسَل السؤال بشكل مجهول إلى المجموعة\n'
+                f'اقصى عدد للأسئلة: 50 سؤال\n\n'
+                f'أرسل السؤال:'
+            )
+            return
+        except:
+            pass
+
+    if param.startswith('w_'):
+        whisper_id = param[2:]
+        w = whispers.get(whisper_id)
+        if not w:
+            await send(chat_id, '⚠️ الهمسه انتهت أو غير موجودة')
+            return
+        if user_id != w['sender_id']:
+            await send(chat_id, '⚠️ هذه الهمسه ليست لك')
+            return
+        private_states[str(user_id)] = {
+            'step': 'await_whisper_text',
+            'whisper_id': whisper_id
+        }
+        await send(chat_id, f'✏️ أرسل نص الهمسه لـ {w.get("recipient_name", "الشخص")}:')
+        return
+
     bot_info = await api_call('getMe', {})
     bot_username = (bot_info or {}).get('username', '')
     add_url = f'https://t.me/{bot_username}?startgroup=true&admin=change_info+delete_messages+restrict_members+invite_users+pin_messages+manage_topics+manage_video_chats'
@@ -1419,36 +1585,42 @@ async def media_mod(msg, data, settings):
         is_animated = sticker.get('is_animated') or sticker.get('is_video')
 
         if settings.get('lock_nsfw') or settings.get('lock_nsfw_restrict') or settings.get('lock_nsfw_warn'):
-            sticker_file_id = (sticker.get('thumbnail') or {}).get('file_id') or sticker.get('file_id')
-            if sticker_file_id:
-                is_violation, violation_type = await check_image_nsfw(sticker_file_id)
-                if is_violation:
-                    if settings.get('lock_nsfw_restrict'):
-                        await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف وتقييد العضو</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>', reply)
+            if sticker.get('is_video'):
+                is_violation, violation_type = await check_video_nsfw(sticker.get('file_id'))
+                if not is_violation:
+                    thumb_id = (sticker.get('thumbnail') or {}).get('file_id')
+                    if thumb_id:
+                        is_violation, violation_type = await check_image_nsfw(thumb_id)
+            else:
+                sticker_file_id = (sticker.get('thumbnail') or {}).get('file_id') or sticker.get('file_id')
+                is_violation, violation_type = await check_image_nsfw(sticker_file_id) if sticker_file_id else (False, None)
+            if is_violation:
+                if settings.get('lock_nsfw_restrict'):
+                    await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف وتقييد العضو</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>', reply)
+                    await delete(chat_id, msg_id)
+                    await restrict(chat_id, user_id, {
+                        'can_send_messages': False, 'can_send_media_messages': False,
+                        'can_send_polls': False, 'can_send_other_messages': False,
+                        'can_add_web_page_previews': False
+                    })
+                elif settings.get('lock_nsfw_warn'):
+                    warns = add_warning(data, chat_id, user_id)
+                    if warns >= 5:
+                        reset_warnings(data, chat_id, user_id)
+                        await send(chat_id, f'🚫 <b>تم تقييد {m}</b>\n\nوصل عدد التحذيرات إلى 5 بسبب إرسال ملصق مخالف', reply)
                         await delete(chat_id, msg_id)
                         await restrict(chat_id, user_id, {
                             'can_send_messages': False, 'can_send_media_messages': False,
                             'can_send_polls': False, 'can_send_other_messages': False,
                             'can_add_web_page_previews': False
                         })
-                    elif settings.get('lock_nsfw_warn'):
-                        warns = add_warning(data, chat_id, user_id)
-                        if warns >= 5:
-                            reset_warnings(data, chat_id, user_id)
-                            await send(chat_id, f'🚫 <b>تم تقييد {m}</b>\n\nوصل عدد التحذيرات إلى 5 بسبب إرسال ملصق مخالف', reply)
-                            await delete(chat_id, msg_id)
-                            await restrict(chat_id, user_id, {
-                                'can_send_messages': False, 'can_send_media_messages': False,
-                                'can_send_polls': False, 'can_send_other_messages': False,
-                                'can_add_web_page_previews': False
-                            })
-                        else:
-                            await send(chat_id, f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\nنوع المخالفة: <b>{violation_type}</b>', reply)
-                            await delete(chat_id, msg_id)
                     else:
-                        await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>', reply)
+                        await send(chat_id, f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\nنوع المخالفة: <b>{violation_type}</b>', reply)
                         await delete(chat_id, msg_id)
-                    return
+                else:
+                    await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>', reply)
+                    await delete(chat_id, msg_id)
+                return
 
         if is_animated and settings['lock_animated']:
             await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الملصقات المتحركة هنا .', reply)
@@ -1776,6 +1948,36 @@ async def process_cmd(msg, data, state, text, settings):
                     reply)
             return
 
+        if text in ['همسه', 'اهمس']:
+            if not msg.get('reply_to_message'):
+                await send(chat_id, '⚠️ رد على رسالة الشخص الذي تريد همسه', reply)
+                return
+            tf = msg['reply_to_message']['from']
+            bot_un = await get_bot_username()
+            import uuid as _uuid
+            whisper_id = str(_uuid.uuid4())[:8]
+            whispers[whisper_id] = {
+                'sender_id': user_id,
+                'sender_name': name(from_),
+                'recipient_id': tf['id'],
+                'recipient_name': name(tf),
+                'group_chat_id': chat_id,
+                'text': None
+            }
+            recipient_mention = f'<a href="tg://user?id={tf["id"]}">{name(tf)}</a>'
+            await send(chat_id,
+                f'• تم تحديد الهمسه لـ ‹‹ {recipient_mention}\n• اضغط الزر لكتابة الهمسه\n─',
+                {
+                    'reply_markup': {
+                        'inline_keyboard': [[
+                            {'text': '🤫 اهمس هنا', 'url': f'https://t.me/{bot_un}?start=w_{whisper_id}'}
+                        ]]
+                    },
+                    'reply_to_message_id': msg_id
+                }
+            )
+            return
+
         yt_match = re.match(r'^يوت\s+(.+)$', text)
         if yt_match and settings.get('youtube_enabled', True):
             query = yt_match.group(1).strip()
@@ -2053,6 +2255,24 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
 
     if text == 'انا':
         game = get_game_state(data, chat_id)
+        ahkam = get_ahkam_state(data, chat_id)
+
+        if ahkam.get('waiting'):
+            players = ahkam.get('players', [])
+            already = any(p['id'] == user_id for p in players)
+            if already:
+                await send(chat_id, f'⚠️ {m} أنت مسجل بالفعل', reply)
+                return
+            players.append({'id': user_id, 'name': name(from_)})
+            ahkam['players'] = players
+            save_data(data)
+            await send(chat_id,
+                f'↢ تم ضفتك للعبة {m}\n'
+                f'↢ للانتهاء يرسل نعم اللي بداء اللعبة .',
+                reply
+            )
+            return
+
         if not game.get('waiting'):
             return
         players = game.get('players', [])
@@ -2072,6 +2292,31 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
 
     if text == 'نعم':
         game = get_game_state(data, chat_id)
+        ahkam = get_ahkam_state(data, chat_id)
+
+        if ahkam.get('waiting'):
+            if ahkam.get('starter_id') != user_id:
+                await send(chat_id, '⚠️ فقط من بدأ اللعبة يقدر يبدأها', reply)
+                return
+            players = ahkam.get('players', [])
+            if len(players) < 2:
+                await send(chat_id, '⚠️ يجب أن ينضم على الأقل لاعب واحد آخر', reply)
+                return
+            chosen_two = random.sample(players, 2)
+            mahkoom = chosen_two[0]
+            hakim = chosen_two[1]
+            ahkam['active'] = True
+            ahkam['waiting'] = False
+            save_data(data)
+            mahkoom_mention = f'<a href="tg://user?id={mahkoom["id"]}">{mahkoom["name"]}</a>'
+            hakim_mention = f'<a href="tg://user?id={hakim["id"]}">{hakim["name"]}</a>'
+            await send(chat_id,
+                f'↢ اخترت الشخص ‹‹ {mahkoom_mention} ›› ليتم الحكم عليه\n'
+                f'↢ الحاكم ‹‹ {hakim_mention} ›',
+                reply
+            )
+            return
+
         if not game.get('waiting'):
             return
         if game.get('starter_id') != user_id:
@@ -2089,12 +2334,13 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
         game['questions_count'] = 0
         save_data(data)
         chosen_mention = f'<a href="tg://user?id={chosen["id"]}">{chosen["name"]}</a>'
+        bot_un = await get_bot_username()
         await send(chat_id,
             f'↢ اخترت الشخص ↢ {chosen_mention} لديكم بس 50 اسئله',
             {
                 'reply_markup': {
                     'inline_keyboard': [[
-                        {'text': '❓ اسالوه هنا', 'callback_data': f'kursi_ask:{chat_id}'}
+                        {'text': '❓ اسالوه هنا', 'url': f'https://t.me/{bot_un}?start=kursi_{chat_id}'}
                     ]]
                 },
                 'reply_to_message_id': msg_id
@@ -2104,6 +2350,20 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
 
     if text == 'انهاء':
         game = get_game_state(data, chat_id)
+        ahkam = get_ahkam_state(data, chat_id)
+
+        if ahkam.get('active') or ahkam.get('waiting'):
+            if ahkam.get('starter_id') != user_id:
+                await send(chat_id, '⚠️ فقط من بدأ اللعبة يقدر ينهيها', reply)
+                return
+            ahkam['active'] = False
+            ahkam['waiting'] = False
+            ahkam['starter_id'] = None
+            ahkam['players'] = []
+            save_data(data)
+            await send(chat_id, f'✅ تم إنهاء لعبة الأحكام بواسطة {m}', reply)
+            return
+
         if not (game.get('active') or game.get('waiting')):
             return
         if game.get('starter_id') != user_id:
@@ -2118,6 +2378,26 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
         game['questions_count'] = 0
         save_data(data)
         await send(chat_id, f'✅ تم إنهاء لعبة الكرسي بواسطة {m}', reply)
+        return
+
+    # ===========================
+    # لعبة الأحكام
+    # ===========================
+    if text == 'احكام':
+        ahkam = get_ahkam_state(data, chat_id)
+        if ahkam.get('active') or ahkam.get('waiting'):
+            await send(chat_id, '⚠️ هناك لعبة أحكام جارية بالفعل، انتظر حتى تنتهي', reply)
+            return
+        ahkam['active'] = False
+        ahkam['waiting'] = True
+        ahkam['starter_id'] = user_id
+        ahkam['players'] = [{'id': user_id, 'name': name(from_)}]
+        save_data(data)
+        await send(chat_id,
+            f'↢ تم بداء اللعبة وتم تسجيلك {m}\n'
+            f'↢ اللي بيلعب يرسل ( انا ) .',
+            reply
+        )
         return
 
     # ===========================
