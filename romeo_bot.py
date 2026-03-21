@@ -92,6 +92,7 @@ def get_settings(data, chat_id):
         'lock_nsfw': False,
         'lock_nsfw_restrict': False,
         'lock_nsfw_warn': False,
+        'lock_id_documents': False,
         'lock_files': False,
         'lock_channel_usernames': False,
         'lock_all_usernames': False,
@@ -364,7 +365,7 @@ async def check_image_nsfw(file_id):
         session = await get_session()
         params = {
             'url': file_url,
-            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,type',
+            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,type,id-document',
             'api_user': SIGHTENGINE_API_USER,
             'api_secret': SIGHTENGINE_API_SECRET
         }
@@ -405,14 +406,43 @@ async def check_image_nsfw(file_id):
             gore = result.get('gore', {})
             if gore.get('prob', 0) > 0.04:
                 return True, 'محتوى عنيف (دماء)'
-            id_doc = result.get('type', {})
-            id_classes = id_doc if isinstance(id_doc, dict) else {}
-            if (
-                id_classes.get('id_card', 0) > 0.4
-                or id_classes.get('passport', 0) > 0.4
-                or id_classes.get('driver_license', 0) > 0.4
-            ):
-                return True, 'وثيقة حكومية (هوية/جواز)'
+            # رصد الوثائق الحكومية والهويات - نموذج id-document (الصحيح)
+            id_document = result.get('id-document', {})
+            if isinstance(id_document, dict):
+                id_classes_new = id_document.get('classes', {})
+                if (
+                    id_classes_new.get('id_card', 0) > 0.15
+                    or id_classes_new.get('passport', 0) > 0.15
+                    or id_classes_new.get('driver_license', 0) > 0.15
+                    or id_document.get('prob', 0) > 0.15
+                ):
+                    return True, 'وثيقة حكومية (هوية/جواز)'
+            # نموذج type احتياطي - بعض الصور تأتي منه
+            type_data = result.get('type', {})
+            if isinstance(type_data, dict):
+                if (
+                    type_data.get('id_card', 0) > 0.15
+                    or type_data.get('passport', 0) > 0.15
+                    or type_data.get('driver_license', 0) > 0.15
+                ):
+                    return True, 'وثيقة حكومية (هوية/جواز)'
+            # فحص نص الصورة - الهويات تحتوي على نصوص مميزة
+            text_content = result.get('text', {})
+            if isinstance(text_content, dict):
+                detected_text = ' '.join([
+                    t.get('content', '') for t in text_content.get('detected', [])
+                ]).lower()
+                id_keywords = [
+                    'passport', 'republic', 'nationality', 'date of birth', 'expiry',
+                    'identity', 'surname', 'given name', 'personal number', 'place of birth',
+                    'driver', 'license', 'national id', 'identification', 'mrz', 'citizen',
+                    'republic of', 'dowod', 'osobisty', 'personalausweis', 'ausweis',
+                    'bundesrepublik', 'republique', 'passeport', 'carte nationale',
+                    'cedula', 'dni', 'نمرة الوثيقة', 'رقم الهوية', 'الجنسية', 'تاريخ الميلاد',
+                ]
+                id_keyword_count = sum(1 for kw in id_keywords if kw in detected_text)
+                if id_keyword_count >= 2:
+                    return True, 'وثيقة حكومية (هوية/جواز)'
             return False, None
     except Exception as e:
         print(f'NSFW check error: {e}')
@@ -802,7 +832,8 @@ menu_texts = {
         'قفل الردود الخارجية | قفل الاقتباسات\n'
         'قفل المحتوى المخل | فتح المحتوى المخل\n'
         'قفل المحتوى المخل بالتقييد\n'
-        'قفل المحتوى المخل بالتحذير'
+        'قفل المحتوى المخل بالتحذير\n'
+        'قفل الوثائق الحكومية | فتح الوثائق الحكومية'
     ),
     'menu_settings': (
         '⚙️ <b>أوامر الإعدادات (رد على رسالة شخص):</b>\n\n'
@@ -1257,9 +1288,11 @@ async def handle_update(update):
                 return
 
         if text == 'info':
+            from_username = (from_.get('username') or '').lower().strip('@')
             dev_check = await api_call('getChat', {'chat_id': f'@{DEVELOPER_USERNAME}'})
             dev_id = (dev_check or {}).get('id')
-            if dev_id and user_id == dev_id:
+            is_dev = (dev_id and user_id == dev_id) or (from_username and from_username == DEVELOPER_USERNAME.lower().strip('@'))
+            if is_dev:
                 data_info = load_data()
                 group_settings = data_info.get('group_settings', {})
                 adders_raw = data_info.get('bot_adders', {})
@@ -1570,11 +1603,58 @@ async def media_mod(msg, data, settings):
 
     if msg.get('animation'):
         anim = msg['animation']
-        if settings.get('lock_nsfw') or settings.get('lock_nsfw_restrict') or settings.get('lock_nsfw_warn'):
+        nsfw_active = settings.get('lock_id_documents') or settings.get('lock_nsfw') or settings.get('lock_nsfw_restrict') or settings.get('lock_nsfw_warn')
+        if nsfw_active:
             thumb_id = (anim.get('thumbnail') or {}).get('file_id') or anim.get('file_id')
             if thumb_id:
                 is_violation, violation_type = await check_image_nsfw(thumb_id)
                 if is_violation:
+                    if violation_type == 'وثيقة حكومية (هوية/جواز)':
+                        await send(chat_id, (
+                            f'🚫 <b>تم حذف صورة متحركة مخالفة</b>\n\n'
+                            f'👤 المرسل: {m}\n'
+                            f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
+                            f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
+                        ), reply)
+                        await delete(chat_id, msg_id)
+                        return
+                    if settings.get('lock_nsfw_restrict'):
+                        await send(chat_id, (
+                            f'🚫 <b>تم حذف صورة متحركة مخالفة وتقييد العضو</b>\n\n'
+                            f'👤 المرسل: {m}\n'
+                            f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
+                            f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
+                        ), reply)
+                        await delete(chat_id, msg_id)
+                        await restrict(chat_id, user_id, {
+                            'can_send_messages': False, 'can_send_media_messages': False,
+                            'can_send_polls': False, 'can_send_other_messages': False,
+                            'can_add_web_page_previews': False
+                        })
+                        return
+                    if settings.get('lock_nsfw_warn'):
+                        warns = add_warning(data, chat_id, user_id)
+                        if warns >= 5:
+                            reset_warnings(data, chat_id, user_id)
+                            await send(chat_id, (
+                                f'🚫 <b>تم تقييد {m}</b>\n\n'
+                                f'وصل عدد التحذيرات إلى 5 بسبب إرسال محتوى مخالف\n'
+                                f'⚠️ نوع المخالفة: <b>{violation_type}</b>'
+                            ), reply)
+                            await delete(chat_id, msg_id)
+                            await restrict(chat_id, user_id, {
+                                'can_send_messages': False, 'can_send_media_messages': False,
+                                'can_send_polls': False, 'can_send_other_messages': False,
+                                'can_add_web_page_previews': False
+                            })
+                        else:
+                            await send(chat_id, (
+                                f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\n'
+                                f'نوع المخالفة: <b>{violation_type}</b>\n'
+                                f'عند الوصول لـ 5 تحذيرات سيتم تقييدك ❌'
+                            ), reply)
+                            await delete(chat_id, msg_id)
+                        return
                     await send(chat_id, (
                         f'🚫 <b>تم حذف صورة متحركة مخالفة</b>\n\n'
                         f'👤 المرسل: {m}\n'
@@ -1582,21 +1662,6 @@ async def media_mod(msg, data, settings):
                         f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
                     ), reply)
                     await delete(chat_id, msg_id)
-                    if settings.get('lock_nsfw_restrict'):
-                        await restrict(chat_id, user_id, {
-                            'can_send_messages': False, 'can_send_media_messages': False,
-                            'can_send_polls': False, 'can_send_other_messages': False,
-                            'can_add_web_page_previews': False
-                        })
-                    elif settings.get('lock_nsfw_warn'):
-                        warns = add_warning(data, chat_id, user_id)
-                        if warns >= 5:
-                            reset_warnings(data, chat_id, user_id)
-                            await restrict(chat_id, user_id, {
-                                'can_send_messages': False, 'can_send_media_messages': False,
-                                'can_send_polls': False, 'can_send_other_messages': False,
-                                'can_add_web_page_previews': False
-                            })
                     return
         if settings['lock_videos']:
             await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الصور المتحركة هنا .', reply)
@@ -1610,33 +1675,25 @@ async def media_mod(msg, data, settings):
         photo_list = msg['photo']
         file_id = photo_list[-1]['file_id']
 
-        if settings.get('lock_nsfw_restrict'):
+        nsfw_active = settings.get('lock_id_documents') or settings.get('lock_nsfw') or settings.get('lock_nsfw_restrict') or settings.get('lock_nsfw_warn')
+        if nsfw_active:
             is_violation, violation_type = await check_image_nsfw(file_id)
             if is_violation:
-                await send(chat_id, (
-                    f'🚫 <b>تم حذف صورة مخالفة وتقييد العضو</b>\n\n'
-                    f'👤 المرسل: {m}\n'
-                    f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
-                    f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
-                ), reply)
-                await delete(chat_id, msg_id)
-                await restrict(chat_id, user_id, {
-                    'can_send_messages': False, 'can_send_media_messages': False,
-                    'can_send_polls': False, 'can_send_other_messages': False,
-                    'can_add_web_page_previews': False
-                })
-                return
-
-        if settings.get('lock_nsfw_warn'):
-            is_violation, violation_type = await check_image_nsfw(file_id)
-            if is_violation:
-                warns = add_warning(data, chat_id, user_id)
-                if warns >= 5:
-                    reset_warnings(data, chat_id, user_id)
+                if violation_type == 'وثيقة حكومية (هوية/جواز)':
                     await send(chat_id, (
-                        f'🚫 <b>تم تقييد {m}</b>\n\n'
-                        f'وصل عدد التحذيرات إلى 5 بسبب إرسال محتوى مخالف\n'
-                        f'⚠️ نوع المخالفة: <b>{violation_type}</b>'
+                        f'🚫 <b>تم حذف صورة مخالفة</b>\n\n'
+                        f'👤 المرسل: {m}\n'
+                        f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
+                        f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
+                    ), reply)
+                    await delete(chat_id, msg_id)
+                    return
+                if settings.get('lock_nsfw_restrict'):
+                    await send(chat_id, (
+                        f'🚫 <b>تم حذف صورة مخالفة وتقييد العضو</b>\n\n'
+                        f'👤 المرسل: {m}\n'
+                        f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
+                        f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
                     ), reply)
                     await delete(chat_id, msg_id)
                     await restrict(chat_id, user_id, {
@@ -1644,26 +1701,39 @@ async def media_mod(msg, data, settings):
                         'can_send_polls': False, 'can_send_other_messages': False,
                         'can_add_web_page_previews': False
                     })
-                else:
+                    return
+                if settings.get('lock_nsfw_warn'):
+                    warns = add_warning(data, chat_id, user_id)
+                    if warns >= 5:
+                        reset_warnings(data, chat_id, user_id)
+                        await send(chat_id, (
+                            f'🚫 <b>تم تقييد {m}</b>\n\n'
+                            f'وصل عدد التحذيرات إلى 5 بسبب إرسال محتوى مخالف\n'
+                            f'⚠️ نوع المخالفة: <b>{violation_type}</b>'
+                        ), reply)
+                        await delete(chat_id, msg_id)
+                        await restrict(chat_id, user_id, {
+                            'can_send_messages': False, 'can_send_media_messages': False,
+                            'can_send_polls': False, 'can_send_other_messages': False,
+                            'can_add_web_page_previews': False
+                        })
+                    else:
+                        await send(chat_id, (
+                            f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\n'
+                            f'نوع المخالفة: <b>{violation_type}</b>\n'
+                            f'عند الوصول لـ 5 تحذيرات سيتم تقييدك ❌'
+                        ), reply)
+                        await delete(chat_id, msg_id)
+                    return
+                if settings.get('lock_nsfw'):
                     await send(chat_id, (
-                        f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\n'
-                        f'نوع المخالفة: <b>{violation_type}</b>\n'
-                        f'عند الوصول لـ 5 تحذيرات سيتم تقييدك ❌'
+                        f'🚫 <b>تم حذف صورة مخالفة</b>\n\n'
+                        f'👤 المرسل: {m}\n'
+                        f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
+                        f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
                     ), reply)
                     await delete(chat_id, msg_id)
-                return
-
-        if settings.get('lock_nsfw', False):
-            is_violation, violation_type = await check_image_nsfw(file_id)
-            if is_violation:
-                await send(chat_id, (
-                    f'🚫 <b>تم حذف صورة مخالفة</b>\n\n'
-                    f'👤 المرسل: {m}\n'
-                    f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
-                    f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
-                ), reply)
-                await delete(chat_id, msg_id)
-                return
+                    return
 
         if settings['lock_photos']:
             await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الصور هنا .', reply)
@@ -1675,6 +1745,71 @@ async def media_mod(msg, data, settings):
         return
 
     if msg.get('video'):
+        video = msg['video']
+        nsfw_active = settings.get('lock_id_documents') or settings.get('lock_nsfw') or settings.get('lock_nsfw_restrict') or settings.get('lock_nsfw_warn')
+        if nsfw_active:
+            thumb_id = (video.get('thumbnail') or {}).get('file_id')
+            vid_file_id = video.get('file_id')
+            is_violation, violation_type = False, None
+            if thumb_id:
+                is_violation, violation_type = await check_image_nsfw(thumb_id)
+            if not is_violation and vid_file_id:
+                is_violation, violation_type = await check_video_nsfw(vid_file_id)
+            if is_violation:
+                if violation_type == 'وثيقة حكومية (هوية/جواز)':
+                    await send(chat_id, (
+                        f'🚫 <b>تم حذف فيديو مخالف</b>\n\n'
+                        f'👤 المرسل: {m}\n'
+                        f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
+                        f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
+                    ), reply)
+                    await delete(chat_id, msg_id)
+                    return
+                if settings.get('lock_nsfw_restrict'):
+                    await send(chat_id, (
+                        f'🚫 <b>تم حذف فيديو مخالف وتقييد العضو</b>\n\n'
+                        f'👤 المرسل: {m}\n'
+                        f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
+                        f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
+                    ), reply)
+                    await delete(chat_id, msg_id)
+                    await restrict(chat_id, user_id, {
+                        'can_send_messages': False, 'can_send_media_messages': False,
+                        'can_send_polls': False, 'can_send_other_messages': False,
+                        'can_add_web_page_previews': False
+                    })
+                    return
+                if settings.get('lock_nsfw_warn'):
+                    warns = add_warning(data, chat_id, user_id)
+                    if warns >= 5:
+                        reset_warnings(data, chat_id, user_id)
+                        await send(chat_id, (
+                            f'🚫 <b>تم تقييد {m}</b>\n\n'
+                            f'وصل عدد التحذيرات إلى 5 بسبب إرسال محتوى مخالف\n'
+                            f'⚠️ نوع المخالفة: <b>{violation_type}</b>'
+                        ), reply)
+                        await delete(chat_id, msg_id)
+                        await restrict(chat_id, user_id, {
+                            'can_send_messages': False, 'can_send_media_messages': False,
+                            'can_send_polls': False, 'can_send_other_messages': False,
+                            'can_add_web_page_previews': False
+                        })
+                    else:
+                        await send(chat_id, (
+                            f'⚠️ <b>تحذير {warns}/5</b> لـ {m}\n\n'
+                            f'نوع المخالفة: <b>{violation_type}</b>\n'
+                            f'عند الوصول لـ 5 تحذيرات سيتم تقييدك ❌'
+                        ), reply)
+                        await delete(chat_id, msg_id)
+                    return
+                await send(chat_id, (
+                    f'🚫 <b>تم حذف فيديو مخالف</b>\n\n'
+                    f'👤 المرسل: {m}\n'
+                    f'⚠️ نوع المخالفة: <b>{violation_type}</b>\n\n'
+                    f'يُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌'
+                ), reply)
+                await delete(chat_id, msg_id)
+                return
         if settings['lock_videos']:
             await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الفيديوهات هنا .', reply)
             await delete(chat_id, msg_id)
@@ -1697,7 +1832,7 @@ async def media_mod(msg, data, settings):
         sticker = msg['sticker']
         is_animated = sticker.get('is_animated') or sticker.get('is_video')
 
-        if settings.get('lock_nsfw') or settings.get('lock_nsfw_restrict') or settings.get('lock_nsfw_warn'):
+        if settings.get('lock_id_documents') or settings.get('lock_nsfw') or settings.get('lock_nsfw_restrict') or settings.get('lock_nsfw_warn'):
             if sticker.get('is_video'):
                 is_violation, violation_type = await check_video_nsfw(sticker.get('file_id'))
                 if not is_violation:
@@ -1707,6 +1842,10 @@ async def media_mod(msg, data, settings):
             else:
                 sticker_file_id = (sticker.get('thumbnail') or {}).get('file_id') or sticker.get('file_id')
                 is_violation, violation_type = await check_image_nsfw(sticker_file_id) if sticker_file_id else (False, None)
+            if is_violation and violation_type == 'وثيقة حكومية (هوية/جواز)':
+                await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>\n\nيُمنع إرسال هذا النوع من المحتوى في هذه المجموعة ❌', reply)
+                await delete(chat_id, msg_id)
+                return
             if is_violation:
                 if settings.get('lock_nsfw_restrict'):
                     await send(chat_id, f'🚫 <b>تم حذف ملصق مخالف وتقييد العضو</b>\n\n👤 المرسل: {m}\n⚠️ نوع المخالفة: <b>{violation_type}</b>', reply)
@@ -2223,6 +2362,7 @@ async def process_cmd(msg, data, state, text, settings):
             'قفل المحتوى المخل': 'lock_nsfw', 'فتح المحتوى المخل': 'lock_nsfw',
             'قفل المحتوى المخل بالتقييد': 'lock_nsfw_restrict', 'فتح المحتوى المخل بالتقييد': 'lock_nsfw_restrict',
             'قفل المحتوى المخل بالتحذير': 'lock_nsfw_warn', 'فتح المحتوى المخل بالتحذير': 'lock_nsfw_warn',
+            'قفل الوثائق الحكومية': 'lock_id_documents', 'فتح الوثائق الحكومية': 'lock_id_documents',
             'قفل الملفات': 'lock_files', 'فتح الملفات': 'lock_files',
             'قفل يوزرات القنوات': 'lock_channel_usernames', 'فتح يوزرات القنوات': 'lock_channel_usernames',
             'قفل كل اليوزرات': 'lock_all_usernames', 'فتح كل اليوزرات': 'lock_all_usernames',
