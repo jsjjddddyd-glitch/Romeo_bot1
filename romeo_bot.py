@@ -364,7 +364,7 @@ async def check_image_nsfw(file_id):
         session = await get_session()
         params = {
             'url': file_url,
-            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,face-attributes,id-classify',
+            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,type',
             'api_user': SIGHTENGINE_API_USER,
             'api_secret': SIGHTENGINE_API_SECRET
         }
@@ -377,29 +377,40 @@ async def check_image_nsfw(file_id):
             nudity = result.get('nudity', {})
             suggestive_classes = nudity.get('suggestive_classes', {})
             if (
-                nudity.get('sexual_activity', 0) > 0.2
-                or nudity.get('sexual_display', 0) > 0.2
-                or nudity.get('erotica', 0) > 0.25
-                or nudity.get('very_suggestive', 0) > 0.35
-                or suggestive_classes.get('suggestive_focus_body_part', 0) > 0.4
-                or suggestive_classes.get('lingerie', 0) > 0.5
-                or suggestive_classes.get('cleavage', 0) > 0.6
+                nudity.get('sexual_activity', 0) > 0.05
+                or nudity.get('sexual_display', 0) > 0.05
+                or nudity.get('erotica', 0) > 0.07
+                or nudity.get('very_suggestive', 0) > 0.1
+                or nudity.get('suggestive', 0) > 0.15
+                or suggestive_classes.get('suggestive_focus_body_part', 0) > 0.1
+                or suggestive_classes.get('lingerie', 0) > 0.1
+                or suggestive_classes.get('cleavage', 0) > 0.15
+                or suggestive_classes.get('bikini', 0) > 0.15
+                or suggestive_classes.get('miniskirt', 0) > 0.2
             ):
                 return True, 'إباحي'
             weapon = result.get('weapon', {})
-            if weapon.get('classes', {}).get('firearm', 0) > 0.7 or weapon.get('classes', {}).get('knife', 0) > 0.8:
+            weapon_classes = weapon.get('classes', {})
+            if (
+                weapon_classes.get('firearm', 0) > 0.3
+                or weapon_classes.get('knife', 0) > 0.3
+                or weapon_classes.get('gun', 0) > 0.3
+            ):
                 return True, 'أسلحة'
             drug = result.get('recreational_drug', {})
             drug_prob = drug.get('prob', 0)
             drug_classes = drug.get('classes', {})
-            if drug_prob > 0.07 or any(v > 0.07 for v in drug_classes.values()):
+            if drug_prob > 0.04 or any(v > 0.04 for v in drug_classes.values()):
                 return True, 'مواد ممنوعة'
+            gore = result.get('gore', {})
+            if gore.get('prob', 0) > 0.04:
+                return True, 'محتوى عنيف (دماء)'
             id_doc = result.get('type', {})
             id_classes = id_doc if isinstance(id_doc, dict) else {}
             if (
-                id_classes.get('id_card', 0) > 0.5
-                or id_classes.get('passport', 0) > 0.5
-                or id_classes.get('driver_license', 0) > 0.5
+                id_classes.get('id_card', 0) > 0.4
+                or id_classes.get('passport', 0) > 0.4
+                or id_classes.get('driver_license', 0) > 0.4
             ):
                 return True, 'وثيقة حكومية (هوية/جواز)'
             return False, None
@@ -438,23 +449,34 @@ async def check_video_nsfw(file_id):
                 nudity = frame.get('nudity', {})
                 suggestive_classes = nudity.get('suggestive_classes', {})
                 if (
-                    nudity.get('sexual_activity', 0) > 0.2
-                    or nudity.get('sexual_display', 0) > 0.2
-                    or nudity.get('erotica', 0) > 0.25
-                    or nudity.get('very_suggestive', 0) > 0.35
-                    or suggestive_classes.get('suggestive_focus_body_part', 0) > 0.4
-                    or suggestive_classes.get('lingerie', 0) > 0.5
-                    or suggestive_classes.get('cleavage', 0) > 0.6
+                    nudity.get('sexual_activity', 0) > 0.05
+                    or nudity.get('sexual_display', 0) > 0.05
+                    or nudity.get('erotica', 0) > 0.07
+                    or nudity.get('very_suggestive', 0) > 0.1
+                    or nudity.get('suggestive', 0) > 0.15
+                    or suggestive_classes.get('suggestive_focus_body_part', 0) > 0.1
+                    or suggestive_classes.get('lingerie', 0) > 0.1
+                    or suggestive_classes.get('cleavage', 0) > 0.15
+                    or suggestive_classes.get('bikini', 0) > 0.15
+                    or suggestive_classes.get('miniskirt', 0) > 0.2
                 ):
                     return True, 'إباحي'
                 weapon = frame.get('weapon', {})
-                if weapon.get('classes', {}).get('firearm', 0) > 0.7 or weapon.get('classes', {}).get('knife', 0) > 0.8:
+                weapon_classes = weapon.get('classes', {})
+                if (
+                    weapon_classes.get('firearm', 0) > 0.3
+                    or weapon_classes.get('knife', 0) > 0.3
+                    or weapon_classes.get('gun', 0) > 0.3
+                ):
                     return True, 'أسلحة'
                 drug = frame.get('recreational_drug', {})
                 drug_prob = drug.get('prob', 0)
                 drug_classes = drug.get('classes', {})
-                if drug_prob > 0.07 or any(v > 0.07 for v in drug_classes.values()):
+                if drug_prob > 0.04 or any(v > 0.04 for v in drug_classes.values()):
                     return True, 'مواد ممنوعة'
+                gore = frame.get('gore', {})
+                if gore.get('prob', 0) > 0.04:
+                    return True, 'محتوى عنيف (دماء)'
             return False, None
     except Exception as e:
         print(f'Video NSFW check error: {e}')
