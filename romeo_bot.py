@@ -40,12 +40,59 @@ last_messages = {}
 whispers = {}
 BOT_USERNAME = None
 
+# قاموس لحفظ يوزرات الأعضاء: {chat_id: {username_lower: user_id}}
+username_to_id = {}
+# قاموس لحفظ معلومات الأعضاء: {chat_id: {user_id: {id, first_name, last_name, username}}}
+user_cache = {}
+
 async def get_bot_username():
     global BOT_USERNAME
     if not BOT_USERNAME:
         bot_info = await api_call('getMe', {})
         BOT_USERNAME = (bot_info or {}).get('username', '')
     return BOT_USERNAME
+
+def register_user(chat_id, from_):
+    cid = str(chat_id)
+    uid = str(from_.get('id', ''))
+    if not uid:
+        return
+    if cid not in user_cache:
+        user_cache[cid] = {}
+    user_cache[cid][uid] = {
+        'id': from_.get('id'),
+        'first_name': from_.get('first_name', ''),
+        'last_name': from_.get('last_name', ''),
+        'username': from_.get('username', '')
+    }
+    uname = (from_.get('username') or '').lower().strip('@')
+    if uname:
+        if cid not in username_to_id:
+            username_to_id[cid] = {}
+        username_to_id[cid][uname] = from_.get('id')
+
+def find_user_by_username(chat_id, username):
+    uname = username.lower().strip('@')
+    cid = str(chat_id)
+    uid = (username_to_id.get(cid) or {}).get(uname)
+    if uid:
+        cached = (user_cache.get(cid) or {}).get(str(uid))
+        if cached:
+            return cached
+        return {'id': uid, 'first_name': username, 'last_name': '', 'username': username}
+    return None
+
+async def get_user_by_username_api(username):
+    uname = username.strip('@')
+    result = await api_call('getChat', {'chat_id': f'@{uname}'})
+    if result and result.get('id'):
+        return {
+            'id': result['id'],
+            'first_name': result.get('first_name', '') or result.get('title', uname),
+            'last_name': result.get('last_name', ''),
+            'username': result.get('username', uname)
+        }
+    return None
 
 # ===========================
 # DATA HELPERS
@@ -165,9 +212,9 @@ def get_settings(data, chat_id):
         'lock_repeat': False, 'lock_mention': False, 'lock_numbers': False, 'lock_stickers': False,
         'lock_animated': False, 'lock_chat': False, 'lock_join': False,
         'lock_external_reply': False, 'lock_quote': False,
-        'disable_id': False, 'disable_service': False, 'disable_fun': False,
+        'disable_id': False, 'disable_service': False, 'disable_fun': True,
         'disable_welcome': False, 'disable_link': False, 'disable_auto_replies': False,
-        'disable_games': False,
+        'disable_games': True,
         'lock_nsfw': False,
         'lock_nsfw_restrict': False,
         'lock_nsfw_warn': False,
@@ -225,7 +272,7 @@ def reset_warnings(data, chat_id, user_id):
         data['user_warnings'][cid] = {}
     data['user_warnings'][cid][uid] = 0
 
-RANKS = {'عضو': 0, 'مميز': 1, 'ادمن': 2, 'أدمن': 2, 'مدير': 3, 'مالك': 4, 'مالك أساسي': 5}
+RANKS = {'عضو': 0, 'مميز': 1, 'ادمن': 2, 'أدمن': 2, 'مدير': 3, 'مالك': 4, 'مالك اساسي': 5}
 
 def rank_level(r):
     return RANKS.get(r, 0)
@@ -420,7 +467,7 @@ async def is_master(data, chat_id, user_id):
     m = await get_chat_member(chat_id, user_id)
     if m and m.get('status') == 'creator':
         return True
-    return rank_level(get_rank(data, chat_id, user_id)) >= rank_level('مالك أساسي')
+    return rank_level(get_rank(data, chat_id, user_id)) >= rank_level('مالك اساسي')
 
 async def is_group_creator(chat_id, user_id):
     m = await get_chat_member(chat_id, user_id)
@@ -918,7 +965,7 @@ menu_texts = {
     ),
     'menu_settings': (
         '⚙️ <b>أوامر الإعدادات (رد على رسالة شخص):</b>\n\n'
-        '• رفع مالك أساسي / تنزيل مالك أساسي\n'
+        '• رفع مالك اساسي / تنزيل مالك اساسي\n'
         '• رفع مالك / تنزيل مالك\n'
         '• رفع مدير / تنزيل مدير\n'
         '• رفع ادمن / تنزيل ادمن\n'
@@ -1290,6 +1337,9 @@ async def handle_update(update):
     text = (msg.get('text') or msg.get('caption') or '').strip()
     msg_id = msg['message_id']
 
+    if from_ and chat_type in ('group', 'supergroup'):
+        register_user(chat_id, from_)
+
     if 'new_chat_members' in msg:
         bot_info = await api_call('getMe', {})
         bot_id = (bot_info or {}).get('id')
@@ -1654,7 +1704,7 @@ async def media_mod(msg, data, settings):
     uname = name(from_)
     reply = {'reply_to_message_id': msg_id}
 
-    if await is_admin_up(data, chat_id, user_id):
+    if await is_master(data, chat_id, user_id):
         return
 
     if settings.get('lock_external_reply') and msg.get('external_reply'):
@@ -1980,7 +2030,7 @@ async def content_mod(msg, data, settings):
     m = mention(from_)
     reply = {'reply_to_message_id': msg_id}
 
-    if await is_admin_up(data, chat_id, user_id):
+    if await is_master(data, chat_id, user_id):
         return False
 
     uname = name(from_)
@@ -2335,22 +2385,59 @@ async def process_cmd(msg, data, state, text, settings):
     # أوامر الرتب (تُفحص قبل التسلية)
     # ===========================
     rank_cmds = {
-        'رفع مالك أساسي': 'مالك أساسي', 'تنزيل مالك أساسي': 'عضو',
+        'رفع مالك اساسي': 'مالك اساسي', 'تنزيل مالك اساسي': 'عضو',
         'رفع مالك': 'مالك', 'تنزيل مالك': 'عضو',
         'رفع مدير': 'مدير', 'تنزيل مدير': 'عضو',
         'رفع ادمن': 'ادمن', 'تنزيل ادمن': 'عضو',
         'رفع مميز': 'مميز', 'تنزيل مميز': 'عضو'
     }
+
+    # دعم الأوامر مع @يوزر مثل: رفع مالك اساسي @يوزر
+    rank_cmd_match = None
+    rank_cmd_key = None
+    for rcmd in rank_cmds:
+        pattern = r'^' + re.escape(rcmd) + r'\s+@(\w+)$'
+        m2 = re.match(pattern, text)
+        if m2:
+            rank_cmd_match = m2
+            rank_cmd_key = rcmd
+            break
+
+    if rank_cmd_key and rank_cmd_match:
+        target_username = rank_cmd_match.group(1)
+        tf = find_user_by_username(chat_id, target_username)
+        if not tf:
+            tf = await get_user_by_username_api(target_username)
+        if not tf:
+            await send(chat_id, f'⚠️ لم أتعرف على @{target_username}\nيجب أن يرسل العضو رسالة في المجموعة أولاً حتى يتعرف عليه البوت', reply)
+            return
+        target_rank = rank_cmds[rank_cmd_key]
+        is_up = rank_cmd_key.startswith('رفع')
+        if target_rank == 'مالك اساسي':
+            if not await is_group_creator(chat_id, user_id):
+                await send(chat_id, '⛔ رفع مالك اساسي للمالك الأصلي للمجموعة فقط', reply)
+                return
+        else:
+            if not (await is_master(data, chat_id, user_id)):
+                await send(chat_id, '⛔ ليس لديك صلاحية', reply)
+                return
+        set_rank(data, chat_id, tf['id'], target_rank)
+        if is_up:
+            await send(chat_id, f'✅ تم رفع {mention(tf)} إلى رتبة <b>{target_rank}</b>\nبواسطة {m}', reply)
+        else:
+            await send(chat_id, f'✅ تم تنزيل {mention(tf)}\nبواسطة {m}', reply)
+        return
+
     if text in rank_cmds:
         if not msg.get('reply_to_message'):
-            await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
+            await send(chat_id, '⚠️ رد على رسالة الشخص أو اكتب @يوزره بعد الأمر', reply)
             return
         tf = msg['reply_to_message']['from']
         target_rank = rank_cmds[text]
         is_up = text.startswith('رفع')
-        if target_rank == 'مالك أساسي':
+        if target_rank == 'مالك اساسي':
             if not await is_group_creator(chat_id, user_id):
-                await send(chat_id, '⛔ رفع مالك أساسي للمالك الأصلي للمجموعة فقط', reply)
+                await send(chat_id, '⛔ رفع مالك اساسي للمالك الأصلي للمجموعة فقط', reply)
                 return
         else:
             if not (await is_master(data, chat_id, user_id)):
@@ -2498,20 +2585,41 @@ async def process_cmd(msg, data, state, text, settings):
     # أوامر الإدارة
     # ===========================
     if await is_admin_up(data, chat_id, user_id):
-        if text == 'كتم':
-            if not msg.get('reply_to_message'):
-                await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
+
+        # دالة مساعدة: البحث عن الهدف (رد أو @يوزر)
+        async def resolve_target(cmd_text):
+            uname_match = re.match(r'^' + re.escape(cmd_text) + r'\s+@(\w+)$', text)
+            if uname_match:
+                target_uname = uname_match.group(1)
+                tf = find_user_by_username(chat_id, target_uname)
+                if not tf:
+                    tf = await get_user_by_username_api(target_uname)
+                if not tf:
+                    await send(chat_id, f'⚠️ لم أتعرف على @{target_uname}\nيجب أن يرسل العضو رسالة في المجموعة أولاً حتى يتعرف عليه البوت', reply)
+                    return None, True
+                return tf, False
+            elif msg.get('reply_to_message'):
+                return msg['reply_to_message']['from'], False
+            else:
+                await send(chat_id, f'⚠️ رد على رسالة الشخص أو اكتب @يوزره بعد الأمر\nمثال: {cmd_text} @يوزر', reply)
+                return None, True
+
+        if text == 'كتم' or text.startswith('كتم @'):
+            tf, handled = await resolve_target('كتم')
+            if handled:
                 return
-            tf = msg['reply_to_message']['from']
+            if tf is None:
+                return
             await restrict(chat_id, tf['id'], {'can_send_messages': False})
             await send(chat_id, f'🔇 تم كتم {mention(tf)}\nبواسطة {m}', reply)
             return
 
-        if text == 'تقييد':
-            if not msg.get('reply_to_message'):
-                await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
+        if text == 'تقييد' or text.startswith('تقييد @'):
+            tf, handled = await resolve_target('تقييد')
+            if handled:
                 return
-            tf = msg['reply_to_message']['from']
+            if tf is None:
+                return
             await restrict(chat_id, tf['id'], {
                 'can_send_messages': False, 'can_send_media_messages': False,
                 'can_send_polls': False, 'can_send_other_messages': False, 'can_add_web_page_previews': False
@@ -2519,11 +2627,14 @@ async def process_cmd(msg, data, state, text, settings):
             await send(chat_id, f'🚫 تم تقييد {mention(tf)}\nبواسطة {m}', reply)
             return
 
-        if text in ['رفع القيود', 'الغاء الكتم', 'الغاء التقييد']:
-            if not msg.get('reply_to_message'):
-                await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
+        if text in ['رفع القيود', 'الغاء الكتم', 'الغاء التقييد'] or \
+           text.startswith('رفع القيود @') or text.startswith('الغاء الكتم @') or text.startswith('الغاء التقييد @'):
+            base_cmd = text.split('@')[0].strip() if '@' in text else text
+            tf, handled = await resolve_target(base_cmd)
+            if handled:
                 return
-            tf = msg['reply_to_message']['from']
+            if tf is None:
+                return
             await restrict(chat_id, tf['id'], {
                 'can_send_messages': True, 'can_send_media_messages': True,
                 'can_send_polls': True, 'can_send_other_messages': True, 'can_add_web_page_previews': True
@@ -2531,11 +2642,12 @@ async def process_cmd(msg, data, state, text, settings):
             await send(chat_id, f'✅ تم رفع القيود عن {mention(tf)}\nبواسطة {m}', reply)
             return
 
-        if text == 'طرد':
-            if not msg.get('reply_to_message'):
-                await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
+        if text == 'طرد' or text.startswith('طرد @'):
+            tf, handled = await resolve_target('طرد')
+            if handled:
                 return
-            tf = msg['reply_to_message']['from']
+            if tf is None:
+                return
             await ban(chat_id, tf['id'])
             await unban(chat_id, tf['id'])
             await send(chat_id, f'👢 تم طرد {mention(tf)}\nبواسطة {m}', reply)
@@ -3102,142 +3214,7 @@ async def handle_state(msg, data, state, user_state, text):
             return
         state[cid][uid] = {'step': 'await_lock_cmd_rank', 'cmd_name': text}
         rank_buttons = [
-            [{'text': '1 - مالك أساسي', 'callback_data': f'lock_cmd_rank:{text}:مالك أساسي'}],
-            [{'text': '2 - مالك', 'callback_data': f'lock_cmd_rank:{text}:مالك'}],
-            [{'text': '3 - مدير', 'callback_data': f'lock_cmd_rank:{text}:مدير'}],
-            [{'text': '4 - ادمن', 'callback_data': f'lock_cmd_rank:{text}:ادمن'}],
-            [{'text': '5 - مميز', 'callback_data': f'lock_cmd_rank:{text}:مميز'}],
-        ]
-        await send(chat_id,
-            f'‹ حسناً عزيزي اختار نوع الرتبة :\n\n'
-            f'- سيتم وضع امر ‹ <b>{text}</b> ‹ له بس',
-            {'reply_markup': {'inline_keyboard': rank_buttons}, 'reply_to_message_id': msg_id})
-
-    elif user_state['step'] == 'await_add_cmd_real':
-        if not text:
-            await send(chat_id, '⚠️ أرسل الأمر الحقيقي:', reply)
-            return
-        state[cid][uid] = {'step': 'await_add_cmd_alias', 'real_cmd': text}
-        await send(chat_id, f'✏️ أرسل الأمر المراد إضافته (الاسم البديل):', reply)
-
-    elif user_state['step'] == 'await_add_cmd_alias':
-        real_cmd = user_state.get('real_cmd', '')
-        if not text:
-            await send(chat_id, '⚠️ أرسل الاسم البديل للأمر:', reply)
-            return
-        if 'custom_commands' not in data:
-            data['custom_commands'] = {}
-        if cid not in data['custom_commands']:
-            data['custom_commands'][cid] = {}
-        data['custom_commands'][cid][text] = real_cmd
-        del state[cid][uid]
-        await send(chat_id, f'✅ تم حفظ الامر <b>{real_cmd}</b> بامر <b>{text}</b> بنجاح', reply)
-
-# ===========================
-# HTTP SERVER
-# ===========================
-
-PORT = int(os.environ.get('PORT', 3000))
-
-async def webhook_handler(request):
-    if request.method == 'POST' and request.path == '/webhook':
-        try:
-            body = await request.json()
-            if 'my_chat_member' in body:
-                asyncio.create_task(handle_my_chat_member(body['my_chat_member']))
-            else:
-                asyncio.create_task(handle_update(body))
-        except Exception as e:
-            print(f'Webhook error: {e}')
-        return web.Response(text='OK', status=200)
-    return web.Response(text='Romeo Bot is running 🌹', status=200)
-
-async def main():
-    init_db()
-    app = web.Application()
-    app.router.add_route('*', '/{tail:.*}', webhook_handler)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    print(f'Romeo Bot running on port {PORT}')
-    asyncio.create_task(auto_clean_loop())
-    await asyncio.Event().wait()
-
-if __name__ == '__main__':
-    asyncio.run(main())
-
-# ===========================
-# STATE FLOW
-# ===========================
-
-async def handle_state(msg, data, state, user_state, text):
-    chat_id = msg['chat']['id']
-    msg_id = msg['message_id']
-    user_id = msg['from']['id']
-    cid = str(chat_id)
-    uid = str(user_id)
-    reply = {'reply_to_message_id': msg_id}
-
-    if user_state['step'] == 'await_clean_time':
-        if not text or not text.strip().isdigit():
-            await send(chat_id, '⚠️ أرسل رقم صحيح (عدد الدقائق)، مثال: 5', reply)
-            return
-        minutes = int(text.strip())
-        if minutes < 1:
-            minutes = 1
-        settings = get_settings(data, chat_id)
-        settings['clean_interval'] = minutes
-        del state[cid][uid]
-        save_state(state)
-        save_data(data)
-        clean_text, clean_keyboard = build_clean_menu(settings)
-        await send(chat_id, f'✅ تم تعيين وقت التنظيف: {minutes} {"دقيقة" if minutes == 1 else "دقائق"}', reply)
-        await send(chat_id, clean_text, {'reply_markup': clean_keyboard})
-        return
-
-    if user_state['step'] == 'await_name':
-        if not text:
-            await send(chat_id, '⚠️ أرسل اسم الرد:', reply)
-            return
-        state[cid][uid] = {'step': 'await_content', 'name': text}
-        await send(chat_id, '📦 أرسل محتوى الرد (نص، صورة، فيديو...):', reply)
-
-    elif user_state['step'] == 'await_content':
-        n = user_state['name']
-        if cid not in data['custom_replies']:
-            data['custom_replies'][cid] = {}
-        if msg.get('photo'):
-            fid = msg['photo'][-1]['file_id']
-            data['custom_replies'][cid][n] = {'type': 'photo', 'file_id': fid, 'caption': msg.get('caption', '')}
-        elif msg.get('video'):
-            data['custom_replies'][cid][n] = {'type': 'video', 'file_id': msg['video']['file_id'], 'caption': msg.get('caption', '')}
-        elif text:
-            data['custom_replies'][cid][n] = {'type': 'text', 'content': text}
-        else:
-            await send(chat_id, '⚠️ أرسل نص أو صورة أو فيديو', reply)
-            return
-        del state[cid][uid]
-        await send(chat_id, f'✅ تم إضافة الرد <b>{n}</b> بنجاح 🌹', reply)
-
-    elif user_state['step'] == 'await_delete_name':
-        if not text:
-            await send(chat_id, '⚠️ أرسل اسم الرد:', reply)
-            return
-        if data['custom_replies'].get(cid, {}).get(text):
-            del data['custom_replies'][cid][text]
-            await send(chat_id, f'✅ تم حذف الرد <b>{text}</b>', reply)
-        else:
-            await send(chat_id, f'⚠️ لم أجد ردًا باسم <b>{text}</b>', reply)
-        del state[cid][uid]
-
-    elif user_state['step'] == 'await_lock_cmd_name':
-        if not text:
-            await send(chat_id, '⚠️ أرسل اسم الأمر:', reply)
-            return
-        state[cid][uid] = {'step': 'await_lock_cmd_rank', 'cmd_name': text}
-        rank_buttons = [
-            [{'text': '1 - مالك أساسي', 'callback_data': f'lock_cmd_rank:{text}:مالك أساسي'}],
+            [{'text': '1 - مالك اساسي', 'callback_data': f'lock_cmd_rank:{text}:مالك اساسي'}],
             [{'text': '2 - مالك', 'callback_data': f'lock_cmd_rank:{text}:مالك'}],
             [{'text': '3 - مدير', 'callback_data': f'lock_cmd_rank:{text}:مدير'}],
             [{'text': '4 - ادمن', 'callback_data': f'lock_cmd_rank:{text}:ادمن'}],
