@@ -564,6 +564,10 @@ async def is_group_creator(chat_id, user_id):
 
 _developer_id_cache = None
 
+def is_developer_by_username(from_dict):
+    uname = (from_dict.get('username') or '').strip().lstrip('@').lower()
+    return uname == DEVELOPER_USERNAME.lower()
+
 async def is_developer(user_id, username=None):
     global _developer_id_cache
     if username and username.lstrip('@').lower() == DEVELOPER_USERNAME.lower():
@@ -2488,7 +2492,11 @@ async def process_cmd(msg, data, state, text, settings):
 
     user_rank = get_rank(data, chat_id, user_id)
     tg_admin = await is_tg_admin(chat_id, user_id)
-    is_member_only = rank_level(user_rank) < rank_level('ادمن') and not tg_admin
+    global _developer_id_cache
+    dev = is_developer_by_username(from_)
+    if dev and _developer_id_cache is None:
+        _developer_id_cache = user_id
+    is_member_only = rank_level(user_rank) < rank_level('ادمن') and not tg_admin and not dev
 
     # ردود تلقائية - للجميع بمن فيهم الأعضاء
     if not settings.get('disable_auto_replies'):
@@ -2539,7 +2547,7 @@ async def process_cmd(msg, data, state, text, settings):
     locked_cmds = settings.get('locked_commands', {})
     if text in locked_cmds:
         required_rank = locked_cmds[text]
-        if rank_level(user_rank) < rank_level(required_rank) and not tg_admin:
+        if rank_level(user_rank) < rank_level(required_rank) and not tg_admin and not dev:
             await send(chat_id, f'⛔ {m} رتبتك <b>{user_rank}</b> وهذا الأمر مخصص لرتبة <b>{required_rank}</b> فقط', reply)
             return
 
