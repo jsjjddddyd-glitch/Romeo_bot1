@@ -518,136 +518,89 @@ async def check_image_nsfw(file_id):
             return False, None
         file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
         session = await get_session()
-        base_params = {
+        params = {
             'url': file_url,
+            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content',
             'api_user': SIGHTENGINE_API_USER,
             'api_secret': SIGHTENGINE_API_SECRET
         }
-
-        # ==============================
-        # الموديلات الأساسية
-        # ==============================
-        result = None
-        params1 = dict(base_params)
-        params1['models'] = 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content'
-        async with session.get('https://api.sightengine.com/1.0/check.json', params=params1) as res:
-            if res.status == 200:
-                r = await res.json()
-                if r.get('status') == 'success':
-                    result = r
-
-        if result is None:
-            return False, None
-
-        # ==============================
-        # فحص المحتوى الإباحي - أعلى حساسية
-        # ==============================
-        nudity = result.get('nudity', {})
-        suggestive_classes = nudity.get('suggestive_classes', {})
-        if (
-            nudity.get('sexual_activity', 0) > 0.02
-            or nudity.get('sexual_display', 0) > 0.02
-            or nudity.get('erotica', 0) > 0.03
-            or nudity.get('very_suggestive', 0) > 0.05
-            or nudity.get('suggestive', 0) > 0.07
-            or nudity.get('mildly_suggestive', 0) > 0.15
-            or suggestive_classes.get('suggestive_focus_body_part', 0) > 0.05
-            or suggestive_classes.get('lingerie', 0) > 0.05
-            or suggestive_classes.get('cleavage', 0) > 0.07
-            or suggestive_classes.get('bikini', 0) > 0.07
-            or suggestive_classes.get('miniskirt', 0) > 0.1
-            or suggestive_classes.get('nudity_art', 0) > 0.05
-            or suggestive_classes.get('male_chest_bare', 0) > 0.2
-        ):
-            return True, 'إباحي'
-
-        # ==============================
-        # فحص الأسلحة - أعلى حساسية
-        # ==============================
-        weapon = result.get('weapon', {})
-        weapon_classes = weapon.get('classes', {})
-        if (
-            weapon_classes.get('firearm', 0) > 0.1
-            or weapon_classes.get('knife', 0) > 0.1
-            or weapon_classes.get('gun', 0) > 0.1
-            or weapon_classes.get('rifle', 0) > 0.1
-            or weapon_classes.get('handgun', 0) > 0.1
-            or weapon.get('prob', 0) > 0.1
-        ):
-            return True, 'أسلحة'
-
-        # ==============================
-        # فحص المواد الممنوعة - أعلى حساسية
-        # ==============================
-        drug = result.get('recreational_drug', {})
-        drug_classes = drug.get('classes', {})
-        if drug.get('prob', 0) > 0.01 or any(v > 0.01 for v in drug_classes.values()):
-            return True, 'مواد ممنوعة'
-
-        # ==============================
-        # فحص المحتوى العنيف - أعلى حساسية
-        # ==============================
-        gore = result.get('gore', {})
-        if gore.get('prob', 0) > 0.02:
-            return True, 'محتوى عنيف (دماء)'
-
-        # ==============================
-        # رصد الوثائق الحكومية عبر النص (text-content)
-        # ==============================
-        text_content = result.get('text', {})
-        if isinstance(text_content, dict):
-            detected_items = text_content.get('detected', [])
-            all_text_parts = [t.get('content', '') for t in detected_items]
-            detected_text = ' '.join(all_text_parts).lower()
-            raw_text_joined = ' '.join(all_text_parts)
-
-            # كلمات قاطعة - كلمة واحدة تكفي
-            strong_id_keywords = [
-                'passport', 'passeport', 'reisepass', 'passaporto', 'pasaporte',
-                'national id', 'national identity', 'nationalausweis',
-                'driver license', "driver's license", 'driving licence', 'drivers license',
-                'identity card', 'carte nationale', "carte d'identite", 'carte d identite',
-                'personalausweis', 'bundesrepublik', 'republique francaise',
-                'cedula de identidad', 'cedula ciudadania', 'cedula de ciudadania',
-                'dowod osobisty', 'id card', 'id number', 'government id',
-                'national card', 'residence permit', 'permanent resident',
-                'رقم الهوية', 'هوية وطنية', 'بطاقة هوية', 'بطاقه هويه',
-                'جواز السفر', 'رخصة القيادة', 'رخصه القياده', 'بطاقة شخصية',
-                'الرقم القومي', 'رقم جواز', 'وثيقة سفر',
-                'kingdom of saudi', 'المملكة العربية', 'الجمهورية العربية',
-                'جمهورية العراق', 'جمهورية مصر', 'دولة الإمارات',
-                'جمهورية تونس', 'المملكة المغربية', 'الجمهورية الجزائرية',
-                'rzeczpospolita', 'polska', 'republic of poland',
-                'bundesrepublik deutschland', 'united kingdom',
-                'carte de sejour', 'permis de conduire', 'fuhrerschein',
-                'tarjeta de identidad', 'documento nacional',
-            ]
-            for kw in strong_id_keywords:
-                if kw in detected_text:
+        async with session.get('https://api.sightengine.com/1.0/check.json', params=params) as res:
+            if res.status != 200:
+                return False, None
+            result = await res.json()
+            if result.get('status') != 'success':
+                return False, None
+            nudity = result.get('nudity', {})
+            suggestive_classes = nudity.get('suggestive_classes', {})
+            if (
+                nudity.get('sexual_activity', 0) > 0.05
+                or nudity.get('sexual_display', 0) > 0.05
+                or nudity.get('erotica', 0) > 0.07
+                or nudity.get('very_suggestive', 0) > 0.1
+                or nudity.get('suggestive', 0) > 0.15
+                or suggestive_classes.get('suggestive_focus_body_part', 0) > 0.1
+                or suggestive_classes.get('lingerie', 0) > 0.1
+                or suggestive_classes.get('cleavage', 0) > 0.15
+                or suggestive_classes.get('bikini', 0) > 0.15
+                or suggestive_classes.get('miniskirt', 0) > 0.2
+            ):
+                return True, 'إباحي'
+            weapon = result.get('weapon', {})
+            weapon_classes = weapon.get('classes', {})
+            if (
+                weapon_classes.get('firearm', 0) > 0.3
+                or weapon_classes.get('knife', 0) > 0.3
+                or weapon_classes.get('gun', 0) > 0.3
+            ):
+                return True, 'أسلحة'
+            drug = result.get('recreational_drug', {})
+            drug_prob = drug.get('prob', 0)
+            drug_classes = drug.get('classes', {})
+            if drug_prob > 0.04 or any(v > 0.04 for v in drug_classes.values()):
+                return True, 'مواد ممنوعة'
+            gore = result.get('gore', {})
+            if gore.get('prob', 0) > 0.04:
+                return True, 'محتوى عنيف (دماء)'
+            # رصد الهويات عبر تحليل النص المكتشف في الصورة
+            text_content = result.get('text', {})
+            if isinstance(text_content, dict):
+                detected_items = text_content.get('detected', [])
+                detected_text = ' '.join([
+                    t.get('content', '') for t in detected_items
+                ]).lower()
+                # كلمات قاطعة تكفي وحدها للكشف (كلمة واحدة = هوية)
+                strong_id_keywords = [
+                    'passport', 'passeport', 'reisepass', 'passaporto', 'pasaporte',
+                    'national id', 'national identity', 'nationalausweis',
+                    'driver license', "driver's license", 'driving licence',
+                    'identity card', 'carte nationale', 'carte d\'identite',
+                    'personalausweis', 'bundesrepublik', 'republique francaise',
+                    'cedula de identidad', 'cedula ciudadania',
+                    'رقم الهوية', 'هوية وطنية', 'بطاقة هوية',
+                    'جواز السفر', 'رخصة القيادة', 'بطاقة شخصية',
+                    'الرقم القومي', 'رقم جواز', 'وثيقة سفر',
+                    'kingdom of saudi', 'المملكة العربية', 'الجمهورية العربية',
+                    'جمهورية العراق', 'جمهورية مصر', 'دولة الإمارات',
+                    'جمهورية تونس', 'المملكة المغربية', 'الجمهورية الجزائرية',
+                ]
+                for kw in strong_id_keywords:
+                    if kw in detected_text:
+                        return True, 'وثيقة حكومية (هوية/جواز)'
+                # كلمات تراكمية - يكفي وجود 2 منها
+                soft_id_keywords = [
+                    'republic', 'nationality', 'date of birth', 'expiry', 'expires',
+                    'surname', 'given name', 'given names', 'personal number',
+                    'place of birth', 'identification', 'mrz', 'citizen',
+                    'document no', 'doc no', 'document number', 'sex / sexe',
+                    'dowod', 'osobisty', 'ausweis', 'republique', 'dni',
+                    'الجنسية', 'تاريخ الميلاد', 'تاريخ الانتهاء', 'تاريخ الإصدار',
+                    'مكان الميلاد', 'نمرة الوثيقة', 'رقم الوثيقة',
+                    'الاسم الأول', 'اسم الأب', 'الاسم الكامل',
+                ]
+                soft_count = sum(1 for kw in soft_id_keywords if kw in detected_text)
+                if soft_count >= 2:
                     return True, 'وثيقة حكومية (هوية/جواز)'
-
-            # كلمات تراكمية - يكفي واحدة مع MRZ أو 2 منها بدون MRZ
-            soft_id_keywords = [
-                'republic', 'nationality', 'date of birth', 'dob', 'expiry', 'expires',
-                'expiration', 'valid until', 'surname', 'given name', 'given names',
-                'personal number', 'personal no', 'place of birth', 'identification',
-                'citizen', 'document no', 'doc no', 'document number', 'sex / sexe',
-                'sex/sexe', 'gender', 'ausweis', 'republique', 'dni', 'pesel',
-                'nazwisko', 'imiona', 'obywatelstwo', 'organ wydajacy',
-                'data wydania', 'data urodzenia', 'data waznosci',
-                'الجنسية', 'تاريخ الميلاد', 'تاريخ الانتهاء', 'تاريخ الإصدار',
-                'مكان الميلاد', 'نمرة الوثيقة', 'رقم الوثيقة', 'تاريخ الانتها',
-                'الاسم الأول', 'اسم الأب', 'الاسم الكامل', 'الجنس',
-            ]
-            soft_count = sum(1 for kw in soft_id_keywords if kw in detected_text)
-            # رصد نمط MRZ (سطر الماكينة في أسفل الجواز/الهوية)
-            mrz_pattern = re.search(r'[A-Z0-9<]{10,}', raw_text_joined)
-            if mrz_pattern and soft_count >= 1:
-                return True, 'وثيقة حكومية (هوية/جواز)'
-            if soft_count >= 2:
-                return True, 'وثيقة حكومية (هوية/جواز)'
-
-        return False, None
+            return False, None
     except Exception as e:
         print(f'NSFW check error: {e}')
         return False, None
