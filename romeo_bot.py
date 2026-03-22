@@ -38,6 +38,9 @@ private_states = {}
 last_messages = {}
 
 whispers = {}
+
+# username_map[chat_id][username_lower] = {id, first_name, last_name, username}
+username_map = {}
 BOT_USERNAME = None
 
 async def get_bot_username():
@@ -428,31 +431,75 @@ async def is_group_creator(chat_id, user_id):
 
 async def resolve_target(msg, text_after_cmd):
     """يرجع (from_dict, error_text) - يقبل رد على رسالة أو @يوزر أو ID"""
-    # إذا كان رد على رسالة
+    chat_id = str(msg['chat']['id'])
+
+    # 1) إذا كان رد على رسالة - الأولوية القصوى
     if msg.get('reply_to_message'):
         tf = msg['reply_to_message'].get('from', {})
         if tf:
             return tf, None
-    # إذا كان @يوزر
+
     target_str = (text_after_cmd or '').strip()
+
+    # 2) فحص entities الرسالة - text_mention يعطينا المستخدم مباشرة بدون يوزرنيم
+    all_entities = msg.get('entities') or msg.get('caption_entities') or []
+    msg_text = msg.get('text') or msg.get('caption') or ''
+    for ent in all_entities:
+        ent_type = ent.get('type')
+        if ent_type == 'text_mention':
+            u = ent.get('user', {})
+            if u and u.get('id'):
+                return u, None
+        if ent_type == 'mention':
+            offset = ent.get('offset', 0)
+            length = ent.get('length', 0)
+            mentioned_raw = msg_text[offset:offset + length]  # مثال: @username
+            mentioned_uname = mentioned_raw.lstrip('@').lower()
+            # ابحث في username_map أولاً
+            cmap = username_map.get(chat_id, {})
+            if mentioned_uname in cmap:
+                return cmap[mentioned_uname], None
+            # جرب getChat كحل أخير
+            try:
+                info = await api_call('getChat', {'chat_id': f'@{mentioned_uname}'})
+                if info and info.get('id'):
+                    return {
+                        'id': info['id'],
+                        'first_name': info.get('first_name') or info.get('title') or mentioned_raw,
+                        'last_name': info.get('last_name', ''),
+                        'username': info.get('username', mentioned_raw)
+                    }, None
+            except:
+                pass
+            return None, f'⚠️ لم أجد المستخدم {mentioned_raw} - يجب أن يكتب في المجموعة أولاً حتى يتعرف عليه البوت'
+
+    # 3) إذا كتب @يوزر في نص الأمر بدون entity (نادر)
     if target_str.startswith('@'):
-        username = target_str.lstrip('@')
+        username = target_str.lstrip('@').lower()
+        cmap = username_map.get(chat_id, {})
+        if username in cmap:
+            return cmap[username], None
         try:
             info = await api_call('getChat', {'chat_id': f'@{username}'})
             if info and info.get('id'):
                 return {
                     'id': info['id'],
-                    'first_name': info.get('first_name') or info.get('title') or username,
+                    'first_name': info.get('first_name') or info.get('title') or target_str,
                     'last_name': info.get('last_name', ''),
                     'username': info.get('username', username)
                 }, None
         except:
             pass
-        return None, f'⚠️ لم أجد المستخدم @{username}'
-    # إذا كان ID رقمي
+        return None, f'⚠️ لم أجد المستخدم @{username} - يجب أن يكتب في المجموعة أولاً'
+
+    # 4) إذا كان ID رقمي
     if target_str.isdigit():
         uid = int(target_str)
+        cmap = username_map.get(chat_id, {})
+        if str(uid) in cmap:
+            return cmap[str(uid)], None
         return {'id': uid, 'first_name': str(uid), 'last_name': '', 'username': ''}, None
+
     return None, '⚠️ رد على رسالة الشخص أو اكتب @يوزره'
 
 # ===========================
@@ -1334,6 +1381,22 @@ async def handle_update(update):
     user_id = from_.get('id')
     text = (msg.get('text') or msg.get('caption') or '').strip()
     msg_id = msg['message_id']
+
+    # حفظ بيانات المستخدم في username_map لاستخدامها لاحقاً في resolve_target
+    if user_id and chat_type in ('group', 'supergroup'):
+        cid_str = str(chat_id)
+        if cid_str not in username_map:
+            username_map[cid_str] = {}
+        uname = (from_.get('username') or '').lower()
+        user_entry = {
+            'id': user_id,
+            'first_name': from_.get('first_name', ''),
+            'last_name': from_.get('last_name', ''),
+            'username': from_.get('username', '')
+        }
+        if uname:
+            username_map[cid_str][uname] = user_entry
+        username_map[cid_str][str(user_id)] = user_entry
 
     if 'new_chat_members' in msg:
         bot_info = await api_call('getMe', {})
