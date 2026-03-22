@@ -564,15 +564,20 @@ async def is_group_creator(chat_id, user_id):
 
 _developer_id_cache = None
 
-async def is_developer(user_id):
+async def is_developer(user_id, username=None):
     global _developer_id_cache
+    if username and username.lstrip('@').lower() == DEVELOPER_USERNAME.lower():
+        if user_id:
+            _developer_id_cache = user_id
+        return True
     if _developer_id_cache and user_id == _developer_id_cache:
         return True
     try:
         dev_check = await api_call('getChat', {'chat_id': f'@{DEVELOPER_USERNAME}'})
         if dev_check and dev_check.get('id'):
             _developer_id_cache = dev_check['id']
-            return user_id == _developer_id_cache
+            if user_id == _developer_id_cache:
+                return True
     except:
         pass
     return False
@@ -1638,7 +1643,7 @@ async def handle_update(update):
                 return
 
         if text in ('/info', 'info'):
-            is_dev = await is_developer(user_id)
+            is_dev = await is_developer(user_id, from_.get('username'))
             if is_dev:
                 data_info = load_data()
                 group_settings = data_info.get('group_settings', {})
@@ -2544,7 +2549,7 @@ async def process_cmd(msg, data, state, text, settings):
             if msg.get('reply_to_message'):
                 tf = msg['reply_to_message']['from']
                 rank = get_rank(data, chat_id, tf['id'])
-                if await is_developer(tf['id']):
+                if await is_developer(tf['id'], tf.get('username')):
                     rank = 'مطور'
                 else:
                     mem2 = await get_chat_member(chat_id, tf['id'])
@@ -2554,7 +2559,7 @@ async def process_cmd(msg, data, state, text, settings):
                         rank = 'مشرف'
                 await send(chat_id, f'🏅 رتبة {name(tf)}: <b>{rank}</b>', reply)
             else:
-                if await is_developer(user_id):
+                if await is_developer(user_id, from_.get('username')):
                     await send(chat_id, f'🏅 رتبتك: <b>مطور</b>', reply)
                 else:
                     await send(chat_id, f'🏅 رتبتك: <b>{get_rank(data, chat_id, user_id)}</b>', reply)
@@ -2564,7 +2569,7 @@ async def process_cmd(msg, data, state, text, settings):
             if msg.get('reply_to_message'):
                 tf = msg['reply_to_message']['from']
                 rank = get_rank(data, chat_id, tf['id'])
-                if await is_developer(tf['id']):
+                if await is_developer(tf['id'], tf.get('username')):
                     rank = 'مطور'
                 else:
                     mem2 = await get_chat_member(chat_id, tf['id'])
