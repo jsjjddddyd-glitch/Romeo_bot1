@@ -1896,6 +1896,59 @@ async def media_mod(msg, data, settings):
     if await is_master(data, chat_id, user_id):
         return
 
+    if settings.get('lock_repeat'):
+        cid_key = str(chat_id)
+        uid_key = str(user_id)
+        now_ts = time.time()
+        max_msgs = settings.get('repeat_max_messages', 5)
+        seconds = settings.get('repeat_seconds', 7)
+        if cid_key not in repeat_tracker:
+            repeat_tracker[cid_key] = {}
+        if uid_key not in repeat_tracker[cid_key]:
+            repeat_tracker[cid_key][uid_key] = []
+        repeat_tracker[cid_key][uid_key] = [
+            t for t in repeat_tracker[cid_key][uid_key]
+            if now_ts - t < seconds
+        ]
+        repeat_tracker[cid_key][uid_key].append(now_ts)
+        if len(repeat_tracker[cid_key][uid_key]) > max_msgs:
+            repeat_tracker[cid_key][uid_key] = []
+            await delete(chat_id, msg_id)
+            if settings.get('lock_repeat_restrict'):
+                await restrict(chat_id, user_id, {
+                    'can_send_messages': False, 'can_send_media_messages': False,
+                    'can_send_polls': False, 'can_send_other_messages': False,
+                    'can_add_web_page_previews': False
+                })
+                await send(chat_id, '‹‹ تم تقييد العضو ' + m + ' بسبب التكرار .')
+            elif settings.get('lock_repeat_warn'):
+                warn_max = settings.get('repeat_warn_max', 3)
+                if cid_key not in repeat_warn_tracker:
+                    repeat_warn_tracker[cid_key] = {}
+                if uid_key not in repeat_warn_tracker[cid_key]:
+                    repeat_warn_tracker[cid_key][uid_key] = {'count': 0, 'timestamps': []}
+                user_warn = repeat_warn_tracker[cid_key][uid_key]
+                if 'last_text' in user_warn and 'timestamps' not in user_warn:
+                    user_warn['timestamps'] = []
+                    del user_warn['last_text']
+                user_warn['count'] = user_warn.get('count', 0) + 1
+                if user_warn['count'] >= warn_max:
+                    user_warn['count'] = 0
+                    await restrict(chat_id, user_id, {
+                        'can_send_messages': False, 'can_send_media_messages': False,
+                        'can_send_polls': False, 'can_send_other_messages': False,
+                        'can_add_web_page_previews': False
+                    })
+                    await send(chat_id, '‹‹ تم تقييد العضو ' + m + ' بسبب تجاوز عدد التحذيرات .')
+                else:
+                    await send(chat_id,
+                        '‹‹ تحذير ' + str(user_warn['count']) + '/' + str(warn_max) + ' ‹ ' + uname + ' ›\n'
+                        '‹‹ ممنوع التكرار هنا .',
+                        reply)
+            else:
+                await send(chat_id, '‹‹ عذراً عزيزي ‹ ' + uname + ' ›\n‹‹ ممنوع التكرار هنا .', reply)
+            return
+
     if settings.get('lock_external_reply') and msg.get('external_reply'):
         await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الردود الخارجية هنا .', reply)
         await delete(chat_id, msg_id)
@@ -2324,24 +2377,40 @@ async def content_mod(msg, data, settings):
                 await send(chat_id, '‹‹ تم تقييد العضو ' + mention(from_) + ' بسبب التكرار .')
                 return True
         else:
-            if cid_key not in last_messages:
-                last_messages[cid_key] = {}
-            last_msg = last_messages[cid_key].get(uid_key, '')
-            if text and text == last_msg:
+            max_msgs = settings.get('repeat_max_messages', 5)
+            seconds = settings.get('repeat_seconds', 7)
+            if cid_key not in repeat_tracker:
+                repeat_tracker[cid_key] = {}
+            if uid_key not in repeat_tracker[cid_key]:
+                repeat_tracker[cid_key][uid_key] = []
+            repeat_tracker[cid_key][uid_key] = [
+                t for t in repeat_tracker[cid_key][uid_key]
+                if now_ts - t < seconds
+            ]
+            repeat_tracker[cid_key][uid_key].append(now_ts)
+            if len(repeat_tracker[cid_key][uid_key]) > max_msgs:
+                repeat_tracker[cid_key][uid_key] = []
                 await send(chat_id, '‹‹ عذراً عزيزي ‹ ' + uname + ' ›\n‹‹ ممنوع التكرار هنا .', reply)
                 await delete(chat_id, msg_id)
                 return True
-            last_messages[cid_key][uid_key] = text
 
     if settings.get('lock_repeat_warn') and not settings.get('lock_repeat_restrict'):
         warn_max = settings.get('repeat_warn_max', 3)
+        max_msgs = settings.get('repeat_max_messages', 5)
+        seconds = settings.get('repeat_seconds', 7)
         if cid_key not in repeat_warn_tracker:
             repeat_warn_tracker[cid_key] = {}
         if uid_key not in repeat_warn_tracker[cid_key]:
-            repeat_warn_tracker[cid_key][uid_key] = {'count': 0, 'last_text': ''}
+            repeat_warn_tracker[cid_key][uid_key] = {'count': 0, 'timestamps': []}
         user_warn = repeat_warn_tracker[cid_key][uid_key]
-        if text and text == user_warn['last_text']:
-            user_warn['count'] += 1
+        if 'last_text' in user_warn and 'timestamps' not in user_warn:
+            user_warn['timestamps'] = []
+            del user_warn['last_text']
+        user_warn['timestamps'] = [t for t in user_warn.get('timestamps', []) if now_ts - t < seconds]
+        user_warn['timestamps'].append(now_ts)
+        if len(user_warn['timestamps']) > max_msgs:
+            user_warn['timestamps'] = []
+            user_warn['count'] = user_warn.get('count', 0) + 1
             if user_warn['count'] >= warn_max:
                 await delete(chat_id, msg_id)
                 await restrict(chat_id, user_id, {
@@ -2350,7 +2419,6 @@ async def content_mod(msg, data, settings):
                     'can_add_web_page_previews': False
                 })
                 user_warn['count'] = 0
-                user_warn['last_text'] = ''
                 await send(chat_id, '‹‹ تم تقييد العضو ' + mention(from_) + ' بسبب تجاوز عدد التحذيرات .')
                 return True
             else:
@@ -2360,9 +2428,6 @@ async def content_mod(msg, data, settings):
                     '‹‹ ممنوع التكرار هنا .',
                     reply)
                 return True
-        else:
-            user_warn['last_text'] = text
-            user_warn['count'] = 0
 
     if settings.get('clean_auto'):
         if settings.get('clean_numbers') and re.search(r'(?<!\d)\+?\d{9,12}(?!\d)', text):
