@@ -525,7 +525,7 @@ async def check_image_nsfw(file_id):
         }
 
         # ==============================
-        # استدعاء 1: الموديلات الأساسية (دائماً تشتغل)
+        # الموديلات الأساسية
         # ==============================
         result = None
         params1 = dict(base_params)
@@ -538,27 +538,6 @@ async def check_image_nsfw(file_id):
 
         if result is None:
             return False, None
-
-        # ==============================
-        # استدعاء 2: موديل id-document (مستقل - إذا فشل نكمل بدونه)
-        # ==============================
-        try:
-            params2 = dict(base_params)
-            params2['models'] = 'id-document'
-            async with session.get('https://api.sightengine.com/1.0/check.json', params=params2) as res2:
-                if res2.status == 200:
-                    r2 = await res2.json()
-                    if r2.get('status') == 'success':
-                        id_doc = r2.get('id-document', {}) or {}
-                        doc_prob = id_doc.get('prob', 0)
-                        doc_type = id_doc.get('type', '')
-                        if doc_prob > 0.15 or doc_type in (
-                            'id', 'passport', 'driver_license', 'id_card',
-                            'residence_permit', 'visa', 'national_id'
-                        ):
-                            return True, 'وثيقة حكومية (هوية/جواز)'
-        except Exception:
-            pass
 
         # ==============================
         # فحص المحتوى الإباحي - أعلى حساسية
