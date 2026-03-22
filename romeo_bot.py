@@ -48,6 +48,7 @@ last_messages = {}
 
 # تتبع عدد رسائل التكرار: {chat_id: {user_id: [timestamps]}}
 repeat_tracker = {}
+repeat_warn_tracker = {}
 
 whispers = {}
 BOT_USERNAME = None
@@ -270,8 +271,8 @@ def get_settings(data, chat_id):
         'lock_swear': False, 'lock_links': False, 'lock_forward': False, 'lock_clutter': False,
         'lock_english': False, 'lock_chinese': False, 'lock_russian': False, 'lock_photos': False,
         'lock_videos': False, 'lock_media_edit': False, 'lock_audio': False, 'lock_music': False,
-        'lock_repeat': False, 'lock_repeat_restrict': False,
-        'repeat_max_messages': 3, 'repeat_seconds': 60,
+        'lock_repeat': False, 'lock_repeat_restrict': False, 'lock_repeat_warn': False,
+        'repeat_max_messages': 5, 'repeat_seconds': 7, 'repeat_warn_max': 3,
         'lock_mention': False, 'lock_numbers': False, 'lock_stickers': False,
         'lock_animated': False, 'lock_chat': False, 'lock_join': False,
         'lock_external_reply': False, 'lock_quote': False,
@@ -1365,11 +1366,39 @@ async def handle_callback(cb):
                 await edit_msg(chat_id, wait_msg['message_id'], '❌ حدث خطأ أثناء التحميل')
         return
 
-    if data_cb in ('repeat_set_messages', 'repeat_set_seconds', 'repeat_toggle_restrict'):
-        if not await is_admin_up(load_data(), chat_id, user_id):
-            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '⛔ هذا الأمر للمشرفين فقط', 'show_alert': True})
-            return
+    if data_cb == 'show_repeat_settings':
         data = load_data()
+        if not await is_admin_up(data, chat_id, user_id):
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': 'هذا الامر للمشرفين فقط', 'show_alert': True})
+            return
+        settings = get_settings(data, chat_id)
+        max_msgs = settings.get('repeat_max_messages', 3)
+        secs = settings.get('repeat_seconds', 60)
+        restrict_on = settings.get('lock_repeat_restrict', False)
+        repeat_on = settings.get('lock_repeat', False)
+        status_txt = (
+            '<b>اعدادات قفل التكرار</b>\n\n'
+            + 'قفل التكرار: ' + ('مفعل' if repeat_on else 'معطل') + '\n'
+            + 'قفل التكرار بالتقييد: ' + ('مفعل' if restrict_on else 'معطل') + '\n'
+            + 'عدد الرسائل المسموح: <b>' + str(max_msgs) + '</b>\n'
+            + 'النافذة الزمنية: <b>' + str(secs) + '</b> ثانية'
+        )
+        kbd = {
+            'inline_keyboard': [
+                [{'text': 'عدد رسائل (' + str(max_msgs) + ')', 'callback_data': 'repeat_set_messages'}],
+                [{'text': 'عدد ثواني (' + str(secs) + ')', 'callback_data': 'repeat_set_seconds'}],
+                [{'text': 'بالتقييد ' + ('✓' if restrict_on else '✗'), 'callback_data': 'repeat_toggle_restrict'}],
+            ]
+        }
+        await api_call('answerCallbackQuery', {'callback_query_id': cb['id']})
+        await send(chat_id, status_txt, {'reply_markup': kbd, 'reply_to_message_id': msg_id})
+        return
+
+    if data_cb in ('repeat_set_messages', 'repeat_set_seconds', 'repeat_toggle_restrict'):
+        data = load_data()
+        if not await is_admin_up(data, chat_id, user_id):
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': 'هذا الامر للمشرفين فقط', 'show_alert': True})
+            return
         settings = get_settings(data, chat_id)
         cid_str = str(chat_id)
 
@@ -1383,17 +1412,17 @@ async def handle_callback(cb):
             secs = settings.get('repeat_seconds', 60)
             repeat_on = settings.get('lock_repeat', False)
             status_txt = (
-                f'⚙️ <b>إعدادات قفل التكرار</b>\n\n'
-                f'• قفل التكرار: {"🟢 مفعّل" if repeat_on else "🔴 معطّل"}\n'
-                f'• قفل التكرار بالتقييد: {"🟢 مفعّل" if new_val else "🔴 معطّل"}\n'
-                f'• عدد الرسائل المسموح: <b>{max_msgs}</b>\n'
-                f'• النافذة الزمنية: <b>{secs}</b> ثانية'
+                '<b>اعدادات قفل التكرار</b>\n\n'
+                + 'قفل التكرار: ' + ('مفعل' if repeat_on else 'معطل') + '\n'
+                + 'قفل التكرار بالتقييد: ' + ('مفعل' if new_val else 'معطل') + '\n'
+                + 'عدد الرسائل المسموح: <b>' + str(max_msgs) + '</b>\n'
+                + 'النافذة الزمنية: <b>' + str(secs) + '</b> ثانية'
             )
             kbd = {
                 'inline_keyboard': [
-                    [{'text': f'📨 عدد رسائل ({max_msgs})', 'callback_data': 'repeat_set_messages'}],
-                    [{'text': f'⏱ عدد ثواني ({secs})', 'callback_data': 'repeat_set_seconds'}],
-                    [{'text': f'🔒 بالتقييد {"✓" if new_val else "✗"}', 'callback_data': 'repeat_toggle_restrict'}],
+                    [{'text': 'عدد رسائل (' + str(max_msgs) + ')', 'callback_data': 'repeat_set_messages'}],
+                    [{'text': 'عدد ثواني (' + str(secs) + ')', 'callback_data': 'repeat_set_seconds'}],
+                    [{'text': 'بالتقييد ' + ('✓' if new_val else '✗'), 'callback_data': 'repeat_toggle_restrict'}],
                 ]
             }
             await edit_msg(chat_id, msg_id, status_txt, kbd)
@@ -1405,8 +1434,8 @@ async def handle_callback(cb):
                 state[cid_str] = {}
             state[cid_str][str(user_id)] = {'step': 'await_repeat_messages', 'menu_msg_id': msg_id}
             save_state(state)
-            await edit_msg(chat_id, msg_id,
-                '📨 <b>أرسل عدد الرسائل المسموح بها</b>\n\nمثال: 3\n\nالعدد الأدنى: 1')
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id']})
+            await send(chat_id, 'ارسل عدد الرسائل المسموح بها\n\nمثال: 3\n\nالعدد الادنى: 1', {'reply_to_message_id': msg_id})
             return
 
         elif data_cb == 'repeat_set_seconds':
@@ -1415,8 +1444,8 @@ async def handle_callback(cb):
                 state[cid_str] = {}
             state[cid_str][str(user_id)] = {'step': 'await_repeat_seconds', 'menu_msg_id': msg_id}
             save_state(state)
-            await edit_msg(chat_id, msg_id,
-                '⏱ <b>أرسل عدد الثواني (النافذة الزمنية)</b>\n\nمثال: 60\n\nالعدد الأدنى: 5 ثواني')
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id']})
+            await send(chat_id, 'ارسل عدد الثواني (النافذة الزمنية)\n\nمثال: 60\n\nالعدد الادنى: 5 ثواني', {'reply_to_message_id': msg_id})
             return
 
     if data_cb.startswith('lock_cmd_rank:'):
@@ -2240,8 +2269,6 @@ async def content_mod(msg, data, settings):
         cid_key = str(chat_id)
         uid_key = str(user_id)
         now_ts = time.time()
-
-        # قفل التكرار بالتقييد (عدد رسائل في ثواني محددة)
         if settings.get('lock_repeat_restrict'):
             max_msgs = settings.get('repeat_max_messages', 3)
             seconds = settings.get('repeat_seconds', 60)
@@ -2249,7 +2276,6 @@ async def content_mod(msg, data, settings):
                 repeat_tracker[cid_key] = {}
             if uid_key not in repeat_tracker[cid_key]:
                 repeat_tracker[cid_key][uid_key] = []
-            # حذف الطوابع القديمة خارج النافذة الزمنية
             repeat_tracker[cid_key][uid_key] = [
                 t for t in repeat_tracker[cid_key][uid_key]
                 if now_ts - t < seconds
@@ -2257,28 +2283,53 @@ async def content_mod(msg, data, settings):
             repeat_tracker[cid_key][uid_key].append(now_ts)
             if len(repeat_tracker[cid_key][uid_key]) > max_msgs:
                 await delete(chat_id, msg_id)
-                # تقييد المستخدم
                 await restrict(chat_id, user_id, {
                     'can_send_messages': False, 'can_send_media_messages': False,
                     'can_send_polls': False, 'can_send_other_messages': False,
                     'can_add_web_page_previews': False
                 })
-                await send(chat_id,
-                    f'‹‹ عذراً عزيزي ‹ {uname} ›\n'
-                    f'‹‹ تم تقييدك بسبب الإرسال المتكرر .\n'
-                    f'‹‹ الحد المسموح: {max_msgs} رسائل كل {seconds} ثانية .',
-                    {'reply_to_message_id': msg_id})
+                await send(chat_id, '‹‹ تم تقييد العضو ' + mention(from_) + ' بسبب التكرار .')
                 return True
         else:
-            # قفل التكرار العادي (نفس النص)
             if cid_key not in last_messages:
                 last_messages[cid_key] = {}
             last_msg = last_messages[cid_key].get(uid_key, '')
             if text and text == last_msg:
-                await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع التكرار هنا .', reply)
+                await send(chat_id, '‹‹ عذراً عزيزي ‹ ' + uname + ' ›\n‹‹ ممنوع التكرار هنا .', reply)
                 await delete(chat_id, msg_id)
                 return True
             last_messages[cid_key][uid_key] = text
+
+    if settings.get('lock_repeat_warn') and not settings.get('lock_repeat_restrict'):
+        warn_max = settings.get('repeat_warn_max', 3)
+        if cid_key not in repeat_warn_tracker:
+            repeat_warn_tracker[cid_key] = {}
+        if uid_key not in repeat_warn_tracker[cid_key]:
+            repeat_warn_tracker[cid_key][uid_key] = {'count': 0, 'last_text': ''}
+        user_warn = repeat_warn_tracker[cid_key][uid_key]
+        if text and text == user_warn['last_text']:
+            user_warn['count'] += 1
+            if user_warn['count'] >= warn_max:
+                await delete(chat_id, msg_id)
+                await restrict(chat_id, user_id, {
+                    'can_send_messages': False, 'can_send_media_messages': False,
+                    'can_send_polls': False, 'can_send_other_messages': False,
+                    'can_add_web_page_previews': False
+                })
+                user_warn['count'] = 0
+                user_warn['last_text'] = ''
+                await send(chat_id, '‹‹ تم تقييد العضو ' + mention(from_) + ' بسبب تجاوز عدد التحذيرات .')
+                return True
+            else:
+                await delete(chat_id, msg_id)
+                await send(chat_id,
+                    '‹‹ تحذير ' + str(user_warn['count']) + '/' + str(warn_max) + ' ‹ ' + uname + ' ›\n'
+                    '‹‹ ممنوع التكرار هنا .',
+                    reply)
+                return True
+        else:
+            user_warn['last_text'] = text
+            user_warn['count'] = 0
 
     if settings.get('clean_auto'):
         if settings.get('clean_numbers') and re.search(r'(?<!\d)\+?\d{9,12}(?!\d)', text):
@@ -2665,6 +2716,7 @@ async def process_cmd(msg, data, state, text, settings):
             'قفل السب': 'lock_swear', 'فتح السب': 'lock_swear',
             'قفل التكرار': 'lock_repeat', 'فتح التكرار': 'lock_repeat',
             'قفل التكرار بالتقييد': 'lock_repeat_restrict', 'فتح التكرار بالتقييد': 'lock_repeat_restrict',
+            'قفل التكرار بالتحذير': 'lock_repeat_warn', 'فتح التكرار بالتحذير': 'lock_repeat_warn',
             'قفل الروابط': 'lock_links', 'فتح الروابط': 'lock_links',
             'قفل التوجيه': 'lock_forward', 'فتح التوجيه': 'lock_forward',
             'قفل التحويل': 'lock_forward', 'فتح التحويل': 'lock_forward',
@@ -2702,31 +2754,34 @@ async def process_cmd(msg, data, state, text, settings):
         if text in lock_map:
             is_lock = text.startswith('قفل')
             data['group_settings'][cid][lock_map[text]] = is_lock
-            # عند تفعيل قفل التكرار بالتقييد، يتم تفعيل قفل التكرار تلقائياً
             if lock_map[text] == 'lock_repeat_restrict' and is_lock:
                 data['group_settings'][cid]['lock_repeat'] = True
             save_data(data)
-            await send(chat_id, f'{"🔒 تم القفل" if is_lock else "🔓 تم الفتح"}: <b>{text}</b>', reply)
+            lock_label = ('🔒 تم القفل' if is_lock else '🔓 تم الفتح') + ': <b>' + text + '</b>'
+            if lock_map[text] in ('lock_repeat', 'lock_repeat_restrict', 'lock_repeat_warn'):
+                kbd = {'inline_keyboard': [[{'text': '⚙️ اعدادات التكرار', 'callback_data': 'show_repeat_settings'}]]}
+                await send(chat_id, lock_label, {'reply_markup': kbd, 'reply_to_message_id': msg_id})
+            else:
+                await send(chat_id, lock_label, reply)
             return
 
         if text == 'اعدادات التكرار':
-            settings = get_settings(data, chat_id)
             max_msgs = settings.get('repeat_max_messages', 3)
             secs = settings.get('repeat_seconds', 60)
             restrict_on = settings.get('lock_repeat_restrict', False)
             repeat_on = settings.get('lock_repeat', False)
             status_txt = (
-                f'⚙️ <b>إعدادات قفل التكرار</b>\n\n'
-                f'• قفل التكرار: {"🟢 مفعّل" if repeat_on else "🔴 معطّل"}\n'
-                f'• قفل التكرار بالتقييد: {"🟢 مفعّل" if restrict_on else "🔴 معطّل"}\n'
-                f'• عدد الرسائل المسموح: <b>{max_msgs}</b>\n'
-                f'• النافذة الزمنية: <b>{secs}</b> ثانية'
+                '<b>اعدادات قفل التكرار</b>\n\n'
+                + 'قفل التكرار: ' + ('مفعل' if repeat_on else 'معطل') + '\n'
+                + 'قفل التكرار بالتقييد: ' + ('مفعل' if restrict_on else 'معطل') + '\n'
+                + 'عدد الرسائل المسموح: <b>' + str(max_msgs) + '</b>\n'
+                + 'النافذة الزمنية: <b>' + str(secs) + '</b> ثانية'
             )
             kbd = {
                 'inline_keyboard': [
-                    [{'text': f'📨 عدد رسائل ({max_msgs})', 'callback_data': 'repeat_set_messages'}],
-                    [{'text': f'⏱ عدد ثواني ({secs})', 'callback_data': 'repeat_set_seconds'}],
-                    [{'text': f'🔒 بالتقييد {"✓" if restrict_on else "✗"}', 'callback_data': 'repeat_toggle_restrict'}],
+                    [{'text': 'عدد رسائل (' + str(max_msgs) + ')', 'callback_data': 'repeat_set_messages'}],
+                    [{'text': 'عدد ثواني (' + str(secs) + ')', 'callback_data': 'repeat_set_seconds'}],
+                    [{'text': 'بالتقييد ' + ('✓' if restrict_on else '✗'), 'callback_data': 'repeat_toggle_restrict'}],
                 ]
             }
             await send(chat_id, status_txt, {'reply_markup': kbd, 'reply_to_message_id': msg_id})
@@ -3397,7 +3452,7 @@ async def handle_state(msg, data, state, user_state, text):
 
     elif user_state['step'] == 'await_repeat_messages':
         if not text or not text.strip().isdigit():
-            await send(chat_id, '⚠️ أرسل رقم صحيح، مثال: 3', reply)
+            await send(chat_id, 'ارسل رقم صحيح، مثال: 3', reply)
             return
         val = int(text.strip())
         if val < 1:
@@ -3408,23 +3463,23 @@ async def handle_state(msg, data, state, user_state, text):
         del state[cid][uid]
         save_state(state)
         save_data(data)
-        await send(chat_id, f'✅ تم تعيين عدد الرسائل المسموح: <b>{val}</b>', reply)
+        await send(chat_id, 'تم تعيين عدد الرسائل المسموح: <b>' + str(val) + '</b>', reply)
         if menu_msg_id:
             secs = settings.get('repeat_seconds', 60)
             restrict_on = settings.get('lock_repeat_restrict', False)
             repeat_on = settings.get('lock_repeat', False)
             status_txt = (
-                f'⚙️ <b>إعدادات قفل التكرار</b>\n\n'
-                f'• قفل التكرار: {"🟢 مفعّل" if repeat_on else "🔴 معطّل"}\n'
-                f'• قفل التكرار بالتقييد: {"🟢 مفعّل" if restrict_on else "🔴 معطّل"}\n'
-                f'• عدد الرسائل المسموح: <b>{val}</b>\n'
-                f'• النافذة الزمنية: <b>{secs}</b> ثانية'
+                '<b>اعدادات قفل التكرار</b>\n\n'
+                + 'قفل التكرار: ' + ('مفعل' if repeat_on else 'معطل') + '\n'
+                + 'قفل التكرار بالتقييد: ' + ('مفعل' if restrict_on else 'معطل') + '\n'
+                + 'عدد الرسائل المسموح: <b>' + str(val) + '</b>\n'
+                + 'النافذة الزمنية: <b>' + str(secs) + '</b> ثانية'
             )
             kbd = {
                 'inline_keyboard': [
-                    [{'text': f'📨 عدد رسائل ({val})', 'callback_data': 'repeat_set_messages'}],
-                    [{'text': f'⏱ عدد ثواني ({secs})', 'callback_data': 'repeat_set_seconds'}],
-                    [{'text': f'🔒 بالتقييد {"✓" if restrict_on else "✗"}', 'callback_data': 'repeat_toggle_restrict'}],
+                    [{'text': 'عدد رسائل (' + str(val) + ')', 'callback_data': 'repeat_set_messages'}],
+                    [{'text': 'عدد ثواني (' + str(secs) + ')', 'callback_data': 'repeat_set_seconds'}],
+                    [{'text': 'بالتقييد ' + ('✓' if restrict_on else '✗'), 'callback_data': 'repeat_toggle_restrict'}],
                 ]
             }
             await edit_msg(chat_id, menu_msg_id, status_txt, kbd)
@@ -3432,7 +3487,7 @@ async def handle_state(msg, data, state, user_state, text):
 
     elif user_state['step'] == 'await_repeat_seconds':
         if not text or not text.strip().isdigit():
-            await send(chat_id, '⚠️ أرسل رقم صحيح، مثال: 60', reply)
+            await send(chat_id, 'ارسل رقم صحيح، مثال: 60', reply)
             return
         val = int(text.strip())
         if val < 5:
@@ -3443,23 +3498,23 @@ async def handle_state(msg, data, state, user_state, text):
         del state[cid][uid]
         save_state(state)
         save_data(data)
-        await send(chat_id, f'✅ تم تعيين النافذة الزمنية: <b>{val}</b> ثانية', reply)
+        await send(chat_id, 'تم تعيين النافذة الزمنية: <b>' + str(val) + '</b> ثانية', reply)
         if menu_msg_id:
             max_msgs = settings.get('repeat_max_messages', 3)
             restrict_on = settings.get('lock_repeat_restrict', False)
             repeat_on = settings.get('lock_repeat', False)
             status_txt = (
-                f'⚙️ <b>إعدادات قفل التكرار</b>\n\n'
-                f'• قفل التكرار: {"🟢 مفعّل" if repeat_on else "🔴 معطّل"}\n'
-                f'• قفل التكرار بالتقييد: {"🟢 مفعّل" if restrict_on else "🔴 معطّل"}\n'
-                f'• عدد الرسائل المسموح: <b>{max_msgs}</b>\n'
-                f'• النافذة الزمنية: <b>{val}</b> ثانية'
+                '<b>اعدادات قفل التكرار</b>\n\n'
+                + 'قفل التكرار: ' + ('مفعل' if repeat_on else 'معطل') + '\n'
+                + 'قفل التكرار بالتقييد: ' + ('مفعل' if restrict_on else 'معطل') + '\n'
+                + 'عدد الرسائل المسموح: <b>' + str(max_msgs) + '</b>\n'
+                + 'النافذة الزمنية: <b>' + str(val) + '</b> ثانية'
             )
             kbd = {
                 'inline_keyboard': [
-                    [{'text': f'📨 عدد رسائل ({max_msgs})', 'callback_data': 'repeat_set_messages'}],
-                    [{'text': f'⏱ عدد ثواني ({val})', 'callback_data': 'repeat_set_seconds'}],
-                    [{'text': f'🔒 بالتقييد {"✓" if restrict_on else "✗"}', 'callback_data': 'repeat_toggle_restrict'}],
+                    [{'text': 'عدد رسائل (' + str(max_msgs) + ')', 'callback_data': 'repeat_set_messages'}],
+                    [{'text': 'عدد ثواني (' + str(val) + ')', 'callback_data': 'repeat_set_seconds'}],
+                    [{'text': 'بالتقييد ' + ('✓' if restrict_on else '✗'), 'callback_data': 'repeat_toggle_restrict'}],
                 ]
             }
             await edit_msg(chat_id, menu_msg_id, status_txt, kbd)
