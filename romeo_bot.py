@@ -50,6 +50,11 @@ last_messages = {}
 repeat_tracker = {}
 repeat_warn_tracker = {}
 
+# تتبع الطرد السريع (التفليش): {chat_id: {user_id: [timestamps]}}
+flash_tracker = {}
+# المحظورون مؤقتاً من الطرد: {chat_id: {user_id: unblock_timestamp}}
+flash_blocked = {}
+
 whispers = {}
 BOT_USERNAME = None
 
@@ -286,6 +291,9 @@ def get_settings(data, chat_id):
         'lock_files': False,
         'lock_channel_usernames': False,
         'lock_all_usernames': False,
+        'lock_flash': False,
+        'flash_ban_limit': 3,
+        'flash_ban_seconds': 30,
         'clean_auto': False,
         'clean_interval': 1,
         'clean_numbers': False,
@@ -301,7 +309,8 @@ def get_settings(data, chat_id):
     return s
 
 def get_rank(data, chat_id, user_id):
-    return (data['user_ranks'].get(str(chat_id)) or {}).get(str(user_id), 'عضو')
+    rank = (data['user_ranks'].get(str(chat_id)) or {}).get(str(user_id), 'عضو')
+    return rank
 
 def set_rank(data, chat_id, user_id, rank):
     if str(chat_id) not in data['user_ranks']:
@@ -527,17 +536,23 @@ async def is_tg_admin(chat_id, user_id):
     return m and m.get('status') in ['administrator', 'creator']
 
 async def is_admin_up(data, chat_id, user_id):
+    if await is_developer(user_id):
+        return True
     if await is_tg_admin(chat_id, user_id):
         return True
     return rank_level(get_rank(data, chat_id, user_id)) >= rank_level('ادمن')
 
 async def is_owner_up(data, chat_id, user_id):
+    if await is_developer(user_id):
+        return True
     m = await get_chat_member(chat_id, user_id)
     if m and m.get('status') == 'creator':
         return True
     return rank_level(get_rank(data, chat_id, user_id)) >= rank_level('مالك')
 
 async def is_master(data, chat_id, user_id):
+    if await is_developer(user_id):
+        return True
     m = await get_chat_member(chat_id, user_id)
     if m and m.get('status') == 'creator':
         return True
@@ -546,6 +561,21 @@ async def is_master(data, chat_id, user_id):
 async def is_group_creator(chat_id, user_id):
     m = await get_chat_member(chat_id, user_id)
     return m and m.get('status') == 'creator'
+
+_developer_id_cache = None
+
+async def is_developer(user_id):
+    global _developer_id_cache
+    if _developer_id_cache and user_id == _developer_id_cache:
+        return True
+    try:
+        dev_check = await api_call('getChat', {'chat_id': f'@{DEVELOPER_USERNAME}'})
+        if dev_check and dev_check.get('id'):
+            _developer_id_cache = dev_check['id']
+            return user_id == _developer_id_cache
+    except:
+        pass
+    return False
 
 # ===========================
 # NSFW IMAGE DETECTION
@@ -1607,11 +1637,8 @@ async def handle_update(update):
                     await send(user_id, '⚠️ أرسل نص الهمسه')
                 return
 
-        if text == 'info':
-            from_username = (from_.get('username') or '').lower().strip('@')
-            dev_check = await api_call('getChat', {'chat_id': f'@{DEVELOPER_USERNAME}'})
-            dev_id = (dev_check or {}).get('id')
-            is_dev = (dev_id and user_id == dev_id) or (from_username and from_username == DEVELOPER_USERNAME.lower().strip('@'))
+        if text in ('/info', 'info'):
+            is_dev = await is_developer(user_id)
             if is_dev:
                 data_info = load_data()
                 group_settings = data_info.get('group_settings', {})
@@ -2517,25 +2544,34 @@ async def process_cmd(msg, data, state, text, settings):
             if msg.get('reply_to_message'):
                 tf = msg['reply_to_message']['from']
                 rank = get_rank(data, chat_id, tf['id'])
-                mem2 = await get_chat_member(chat_id, tf['id'])
-                if mem2 and mem2.get('status') == 'creator':
-                    rank = 'مالك المجموعة'
-                elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
-                    rank = 'مشرف'
+                if await is_developer(tf['id']):
+                    rank = 'مطور'
+                else:
+                    mem2 = await get_chat_member(chat_id, tf['id'])
+                    if mem2 and mem2.get('status') == 'creator':
+                        rank = 'مالك المجموعة'
+                    elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
+                        rank = 'مشرف'
                 await send(chat_id, f'🏅 رتبة {name(tf)}: <b>{rank}</b>', reply)
             else:
-                await send(chat_id, f'🏅 رتبتك: <b>{get_rank(data, chat_id, user_id)}</b>', reply)
+                if await is_developer(user_id):
+                    await send(chat_id, f'🏅 رتبتك: <b>مطور</b>', reply)
+                else:
+                    await send(chat_id, f'🏅 رتبتك: <b>{get_rank(data, chat_id, user_id)}</b>', reply)
             return
 
         if text in ['رتبته', 'رتبتها']:
             if msg.get('reply_to_message'):
                 tf = msg['reply_to_message']['from']
                 rank = get_rank(data, chat_id, tf['id'])
-                mem2 = await get_chat_member(chat_id, tf['id'])
-                if mem2 and mem2.get('status') == 'creator':
-                    rank = 'مالك المجموعة'
-                elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
-                    rank = 'مشرف'
+                if await is_developer(tf['id']):
+                    rank = 'مطور'
+                else:
+                    mem2 = await get_chat_member(chat_id, tf['id'])
+                    if mem2 and mem2.get('status') == 'creator':
+                        rank = 'مالك المجموعة'
+                    elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
+                        rank = 'مشرف'
                 await send(chat_id, f'🏅 رتبة {name(tf)}: <b>{rank}</b>', reply)
             else:
                 await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة رتبته', reply)
@@ -2848,14 +2884,19 @@ async def process_cmd(msg, data, state, text, settings):
             'قفل الردود الخارجيه': 'lock_external_reply', 'فتح الردود الخارجيه': 'lock_external_reply',
             'قفل الاقتباس': 'lock_quote', 'فتح الاقتباس': 'lock_quote',
             'قفل الاقتباسات': 'lock_quote', 'فتح الاقتباسات': 'lock_quote',
+            'تفعيل حماية التفليش': 'lock_flash', 'تعطيل حماية التفليش': 'lock_flash',
+            'تفعيل حمايه التفليش': 'lock_flash', 'تعطيل حمايه التفليش': 'lock_flash',
         }
         if text in lock_map:
-            is_lock = text.startswith('قفل')
+            is_lock = text.startswith('قفل') or text.startswith('تفعيل')
             data['group_settings'][cid][lock_map[text]] = is_lock
             if lock_map[text] == 'lock_repeat_restrict' and is_lock:
                 data['group_settings'][cid]['lock_repeat'] = True
             save_data(data)
-            lock_label = ('🔒 تم القفل' if is_lock else '🔓 تم الفتح') + ': <b>' + text + '</b>'
+            if lock_map[text] == 'lock_flash':
+                lock_label = ('🛡️ تم تفعيل حماية التفليش' if is_lock else '🔓 تم تعطيل حماية التفليش')
+            else:
+                lock_label = ('🔒 تم القفل' if is_lock else '🔓 تم الفتح') + ': <b>' + text + '</b>'
             if lock_map[text] in ('lock_repeat', 'lock_repeat_restrict', 'lock_repeat_warn'):
                 kbd = {'inline_keyboard': [[{'text': '⚙️ اعدادات التكرار', 'callback_data': 'show_repeat_settings'}]]}
                 await send(chat_id, lock_label, {'reply_markup': kbd, 'reply_to_message_id': msg_id})
@@ -2991,6 +3032,52 @@ async def process_cmd(msg, data, state, text, settings):
                 return
             if tf is None:
                 return
+
+            if settings.get('lock_flash') and not await is_developer(user_id):
+                now_ts = time.time()
+                cid_key = str(chat_id)
+                uid_key = str(user_id)
+                blocked_until = (flash_blocked.get(cid_key) or {}).get(uid_key, 0)
+                if now_ts < blocked_until:
+                    remaining = int(blocked_until - now_ts)
+                    await send(chat_id,
+                        f'🚫 {m} ممنوع من الطرد بسبب التفليش\n'
+                        f'⏱ انتظر <b>{remaining}</b> ثانية', reply)
+                    return
+                ban_limit = settings.get('flash_ban_limit', 3)
+                ban_seconds = settings.get('flash_ban_seconds', 30)
+                if cid_key not in flash_tracker:
+                    flash_tracker[cid_key] = {}
+                if uid_key not in flash_tracker[cid_key]:
+                    flash_tracker[cid_key][uid_key] = []
+                flash_tracker[cid_key][uid_key] = [
+                    t for t in flash_tracker[cid_key][uid_key]
+                    if now_ts - t < ban_seconds
+                ]
+                flash_tracker[cid_key][uid_key].append(now_ts)
+                if len(flash_tracker[cid_key][uid_key]) >= ban_limit:
+                    flash_tracker[cid_key][uid_key] = []
+                    if cid_key not in flash_blocked:
+                        flash_blocked[cid_key] = {}
+                    flash_blocked[cid_key][uid_key] = now_ts + 60
+                    owner_tag = ''
+                    try:
+                        admins = await api_call('getChatAdministrators', {'chat_id': chat_id})
+                        if admins:
+                            owner = next((a for a in admins if a.get('status') == 'creator'), None)
+                            if owner:
+                                ou = owner['user'].get('username')
+                                owner_tag = f'@{ou}' if ou else mention(owner['user'])
+                    except:
+                        pass
+                    await send(chat_id,
+                        f'⚠️ <b>تنبيه تفليش!</b>\n\n'
+                        f'🔴 المستخدم {m} يقوم بالتفليش!\n'
+                        f'تم طرد {ban_limit} أعضاء بسرعة كبيرة\n\n'
+                        f'📢 {owner_tag}\n'
+                        f'🔒 تم منع {m} من الطرد لمدة دقيقة')
+                    return
+
             await ban(chat_id, tf['id'])
             await unban(chat_id, tf['id'])
             await send(chat_id, f'👢 تم طرد {mention(tf)}\nبواسطة {m}', reply)
