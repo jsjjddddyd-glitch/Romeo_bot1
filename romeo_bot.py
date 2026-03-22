@@ -4,6 +4,7 @@ import os
 import re
 import asyncio
 import random
+import time
 import aiohttp
 import psycopg2
 import psycopg2.extras
@@ -26,8 +27,16 @@ _session = None
 async def get_session():
     global _session
     if _session is None or _session.closed:
-        connector = aiohttp.TCPConnector(limit=100, ttl_dns_cache=300)
-        _session = aiohttp.ClientSession(connector=connector)
+        connector = aiohttp.TCPConnector(
+            limit=200,
+            limit_per_host=50,
+            ttl_dns_cache=600,
+            keepalive_timeout=30,
+        )
+        _session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=aiohttp.ClientTimeout(total=15),
+        )
     return _session
 
 clean_queue = {}
@@ -44,6 +53,16 @@ BOT_USERNAME = None
 username_to_id = {}
 # قاموس لحفظ معلومات الأعضاء: {chat_id: {user_id: {id, first_name, last_name, username}}}
 user_cache = {}
+
+# ===== كاش البيانات في الذاكرة =====
+_DATA = None
+_STATE = None
+_DATA_DIRTY = False
+_STATE_DIRTY = False
+
+# كاش صلاحيات المشرفين: {(chat_id, user_id): (result, timestamp)}
+_admin_cache = {}
+_ADMIN_CACHE_TTL = 60  # ثانية
 
 async def get_bot_username():
     global BOT_USERNAME
@@ -120,7 +139,7 @@ def init_db():
     except Exception as e:
         print(f'Database init error: {e}')
 
-def load_data():
+def _load_data_from_db():
     if DATABASE_URL:
         try:
             conn = _get_db_conn()
@@ -144,25 +163,7 @@ def load_data():
         'bank_accounts': {}, 'games_state': {}
     }
 
-def save_data(d):
-    if DATABASE_URL:
-        try:
-            conn = _get_db_conn()
-            cur = conn.cursor()
-            cur.execute('''
-                INSERT INTO bot_storage (key, value) VALUES ('data', %s)
-                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-            ''', (json.dumps(d, ensure_ascii=False),))
-            conn.commit()
-            cur.close()
-            conn.close()
-            return
-        except Exception as e:
-            print(f'DB save_data error: {e}')
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(d, f, ensure_ascii=False, indent=2)
-
-def load_state():
+def _load_state_from_db():
     if DATABASE_URL:
         try:
             conn = _get_db_conn()
@@ -182,7 +183,25 @@ def load_state():
         pass
     return {}
 
-def save_state(s):
+def _flush_data_to_db(d):
+    if DATABASE_URL:
+        try:
+            conn = _get_db_conn()
+            cur = conn.cursor()
+            cur.execute('''
+                INSERT INTO bot_storage (key, value) VALUES ('data', %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            ''', (json.dumps(d, ensure_ascii=False),))
+            conn.commit()
+            cur.close()
+            conn.close()
+            return
+        except Exception as e:
+            print(f'DB save_data error: {e}')
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(d, f, ensure_ascii=False, indent=2)
+
+def _flush_state_to_db(s):
     if DATABASE_URL:
         try:
             conn = _get_db_conn()
@@ -199,6 +218,45 @@ def save_state(s):
             print(f'DB save_state error: {e}')
     with open(STATE_FILE, 'w', encoding='utf-8') as f:
         json.dump(s, f, ensure_ascii=False)
+
+def load_data():
+    global _DATA
+    if _DATA is None:
+        _DATA = _load_data_from_db()
+    return _DATA
+
+def save_data(d):
+    global _DATA, _DATA_DIRTY
+    _DATA = d
+    _DATA_DIRTY = True
+
+def load_state():
+    global _STATE
+    if _STATE is None:
+        _STATE = _load_state_from_db()
+    return _STATE
+
+def save_state(s):
+    global _STATE, _STATE_DIRTY
+    _STATE = s
+    _STATE_DIRTY = True
+
+async def _db_flush_loop():
+    global _DATA_DIRTY, _STATE_DIRTY
+    loop = asyncio.get_event_loop()
+    while True:
+        await asyncio.sleep(4)
+        try:
+            if _DATA_DIRTY and _DATA is not None:
+                data_snapshot = json.loads(json.dumps(_DATA, ensure_ascii=False))
+                _DATA_DIRTY = False
+                await loop.run_in_executor(None, _flush_data_to_db, data_snapshot)
+            if _STATE_DIRTY and _STATE is not None:
+                state_snapshot = json.loads(json.dumps(_STATE, ensure_ascii=False))
+                _STATE_DIRTY = False
+                await loop.run_in_executor(None, _flush_state_to_db, state_snapshot)
+        except Exception as e:
+            print(f'DB flush error: {e}')
 
 def get_settings(data, chat_id):
     id_ = str(chat_id)
@@ -415,7 +473,17 @@ async def delete(chat_id, msg_id):
     return await api_call('deleteMessage', {'chat_id': chat_id, 'message_id': msg_id})
 
 async def get_chat_member(chat_id, user_id):
-    return await api_call('getChatMember', {'chat_id': chat_id, 'user_id': user_id})
+    key = (chat_id, user_id)
+    now = time.time()
+    cached = _admin_cache.get(key)
+    if cached and (now - cached[1]) < _ADMIN_CACHE_TTL:
+        return cached[0]
+    result = await api_call('getChatMember', {'chat_id': chat_id, 'user_id': user_id})
+    _admin_cache[key] = (result, now)
+    return result
+
+def invalidate_admin_cache(chat_id, user_id):
+    _admin_cache.pop((chat_id, user_id), None)
 
 async def get_chat(chat_id):
     return await api_call('getChat', {'chat_id': chat_id})
@@ -3265,7 +3333,11 @@ async def webhook_handler(request):
     return web.Response(text='Romeo Bot is running 🌹', status=200)
 
 async def main():
+    global _DATA, _STATE
     init_db()
+    _DATA = _load_data_from_db()
+    _STATE = _load_state_from_db()
+    print('Data loaded into memory cache')
     app = web.Application()
     app.router.add_route('*', '/{tail:.*}', webhook_handler)
     runner = web.AppRunner(app)
@@ -3274,6 +3346,7 @@ async def main():
     await site.start()
     print(f'Romeo Bot running on port {PORT}')
     asyncio.create_task(auto_clean_loop())
+    asyncio.create_task(_db_flush_loop())
     await asyncio.Event().wait()
 
 if __name__ == '__main__':
