@@ -38,9 +38,6 @@ private_states = {}
 last_messages = {}
 
 whispers = {}
-
-# username_map[chat_id][username_lower] = {id, first_name, last_name, username}
-username_map = {}
 BOT_USERNAME = None
 
 async def get_bot_username():
@@ -168,9 +165,9 @@ def get_settings(data, chat_id):
         'lock_repeat': False, 'lock_mention': False, 'lock_numbers': False, 'lock_stickers': False,
         'lock_animated': False, 'lock_chat': False, 'lock_join': False,
         'lock_external_reply': False, 'lock_quote': False,
-        'disable_id': False, 'disable_service': False, 'disable_fun': True,
+        'disable_id': False, 'disable_service': False, 'disable_fun': False,
         'disable_welcome': False, 'disable_link': False, 'disable_auto_replies': False,
-        'disable_games': True,
+        'disable_games': False,
         'lock_nsfw': False,
         'lock_nsfw_restrict': False,
         'lock_nsfw_warn': False,
@@ -228,7 +225,7 @@ def reset_warnings(data, chat_id, user_id):
         data['user_warnings'][cid] = {}
     data['user_warnings'][cid][uid] = 0
 
-RANKS = {'عضو': 0, 'مميز': 1, 'ادمن': 2, 'أدمن': 2, 'مدير': 3, 'مالك': 4, 'مالك اساسي': 5, 'مالك أساسي': 5}
+RANKS = {'عضو': 0, 'مميز': 1, 'ادمن': 2, 'أدمن': 2, 'مدير': 3, 'مالك': 4, 'مالك أساسي': 5}
 
 def rank_level(r):
     return RANKS.get(r, 0)
@@ -423,84 +420,11 @@ async def is_master(data, chat_id, user_id):
     m = await get_chat_member(chat_id, user_id)
     if m and m.get('status') == 'creator':
         return True
-    return rank_level(get_rank(data, chat_id, user_id)) >= rank_level('مالك اساسي')
+    return rank_level(get_rank(data, chat_id, user_id)) >= rank_level('مالك أساسي')
 
 async def is_group_creator(chat_id, user_id):
     m = await get_chat_member(chat_id, user_id)
     return m and m.get('status') == 'creator'
-
-async def resolve_target(msg, text_after_cmd):
-    """يرجع (from_dict, error_text) - يقبل رد على رسالة أو @يوزر أو ID"""
-    chat_id = str(msg['chat']['id'])
-
-    # 1) إذا كان رد على رسالة - الأولوية القصوى
-    if msg.get('reply_to_message'):
-        tf = msg['reply_to_message'].get('from', {})
-        if tf:
-            return tf, None
-
-    target_str = (text_after_cmd or '').strip()
-
-    # 2) فحص entities الرسالة - text_mention يعطينا المستخدم مباشرة بدون يوزرنيم
-    all_entities = msg.get('entities') or msg.get('caption_entities') or []
-    msg_text = msg.get('text') or msg.get('caption') or ''
-    for ent in all_entities:
-        ent_type = ent.get('type')
-        if ent_type == 'text_mention':
-            u = ent.get('user', {})
-            if u and u.get('id'):
-                return u, None
-        if ent_type == 'mention':
-            offset = ent.get('offset', 0)
-            length = ent.get('length', 0)
-            mentioned_raw = msg_text[offset:offset + length]  # مثال: @username
-            mentioned_uname = mentioned_raw.lstrip('@').lower()
-            # ابحث في username_map أولاً
-            cmap = username_map.get(chat_id, {})
-            if mentioned_uname in cmap:
-                return cmap[mentioned_uname], None
-            # جرب getChat كحل أخير
-            try:
-                info = await api_call('getChat', {'chat_id': f'@{mentioned_uname}'})
-                if info and info.get('id'):
-                    return {
-                        'id': info['id'],
-                        'first_name': info.get('first_name') or info.get('title') or mentioned_raw,
-                        'last_name': info.get('last_name', ''),
-                        'username': info.get('username', mentioned_raw)
-                    }, None
-            except:
-                pass
-            return None, f'⚠️ لم أجد المستخدم {mentioned_raw} - يجب أن يكتب في المجموعة أولاً حتى يتعرف عليه البوت'
-
-    # 3) إذا كتب @يوزر في نص الأمر بدون entity (نادر)
-    if target_str.startswith('@'):
-        username = target_str.lstrip('@').lower()
-        cmap = username_map.get(chat_id, {})
-        if username in cmap:
-            return cmap[username], None
-        try:
-            info = await api_call('getChat', {'chat_id': f'@{username}'})
-            if info and info.get('id'):
-                return {
-                    'id': info['id'],
-                    'first_name': info.get('first_name') or info.get('title') or target_str,
-                    'last_name': info.get('last_name', ''),
-                    'username': info.get('username', username)
-                }, None
-        except:
-            pass
-        return None, f'⚠️ لم أجد المستخدم @{username} - يجب أن يكتب في المجموعة أولاً'
-
-    # 4) إذا كان ID رقمي
-    if target_str.isdigit():
-        uid = int(target_str)
-        cmap = username_map.get(chat_id, {})
-        if str(uid) in cmap:
-            return cmap[str(uid)], None
-        return {'id': uid, 'first_name': str(uid), 'last_name': '', 'username': ''}, None
-
-    return None, '⚠️ رد على رسالة الشخص أو اكتب @يوزره'
 
 # ===========================
 # NSFW IMAGE DETECTION
@@ -1366,22 +1290,6 @@ async def handle_update(update):
     text = (msg.get('text') or msg.get('caption') or '').strip()
     msg_id = msg['message_id']
 
-    # حفظ بيانات المستخدم في username_map لاستخدامها لاحقاً في resolve_target
-    if user_id and chat_type in ('group', 'supergroup'):
-        cid_str = str(chat_id)
-        if cid_str not in username_map:
-            username_map[cid_str] = {}
-        uname = (from_.get('username') or '').lower()
-        user_entry = {
-            'id': user_id,
-            'first_name': from_.get('first_name', ''),
-            'last_name': from_.get('last_name', ''),
-            'username': from_.get('username', '')
-        }
-        if uname:
-            username_map[cid_str][uname] = user_entry
-        username_map[cid_str][str(user_id)] = user_entry
-
     if 'new_chat_members' in msg:
         bot_info = await api_call('getMe', {})
         bot_id = (bot_info or {}).get('id')
@@ -2229,13 +2137,10 @@ async def process_cmd(msg, data, state, text, settings):
         return
 
     # الأعضاء العاديون: إذا حاولوا استخدام أوامر الأدمن، أخبرهم برتبتهم
-    ADMIN_CMD_PREFIXES = ['قفل ', 'فتح ', 'تعطيل ', 'تفعيل ',
-        'رفع مالك اساسي', 'تنزيل مالك اساسي', 'رفع مالك أساسي', 'تنزيل مالك أساسي',
-        'رفع مالك', 'تنزيل مالك',
-        'رفع مدير', 'تنزيل مدير', 'رفع ادمن', 'تنزيل ادمن', 'رفع مميز', 'تنزيل مميز',
-        'كتم ', 'تقييد ', 'طرد ', 'حظر ', 'رفع القيود ', 'الغاء الكتم ', 'الغاء التقييد ']
+    ADMIN_CMD_PREFIXES = ['قفل ', 'فتح ', 'تعطيل ', 'تفعيل ', 'رفع مالك', 'تنزيل مالك',
+        'رفع مدير', 'تنزيل مدير', 'رفع ادمن', 'تنزيل ادمن', 'رفع مميز', 'تنزيل مميز']
     ADMIN_CMD_EXACT = ['التنظيف', 'اضف رد', 'مسح رد', 'كتم', 'تقييد', 'رفع القيود',
-        'الغاء الكتم', 'الغاء التقييد', 'طرد', 'حظر', 'مسح', 'قفل امر', 'اضف امر', 'الاوامر', 'اوامر']
+        'الغاء الكتم', 'الغاء التقييد', 'طرد', 'مسح', 'قفل امر', 'اضف امر', 'الاوامر', 'اوامر']
     is_admin_cmd = text in ADMIN_CMD_EXACT or any(text.startswith(p) for p in ADMIN_CMD_PREFIXES)
     if is_member_only and is_admin_cmd:
         await send(chat_id, f'⛔ {m} رتبتك <b>عضو</b> وما تقدر تستخدم هذا الأمر', reply)
@@ -2430,30 +2335,22 @@ async def process_cmd(msg, data, state, text, settings):
     # أوامر الرتب (تُفحص قبل التسلية)
     # ===========================
     rank_cmds = {
-        'رفع مالك اساسي': 'مالك اساسي', 'تنزيل مالك اساسي': 'عضو',
-        'رفع مالك أساسي': 'مالك اساسي', 'تنزيل مالك أساسي': 'عضو',
+        'رفع مالك أساسي': 'مالك أساسي', 'تنزيل مالك أساسي': 'عضو',
         'رفع مالك': 'مالك', 'تنزيل مالك': 'عضو',
         'رفع مدير': 'مدير', 'تنزيل مدير': 'عضو',
         'رفع ادمن': 'ادمن', 'تنزيل ادمن': 'عضو',
         'رفع مميز': 'مميز', 'تنزيل مميز': 'عضو'
     }
-    matched_rank_cmd = None
-    after_rank_cmd = ''
-    for cmd_key in rank_cmds:
-        if text == cmd_key or text.startswith(cmd_key + ' '):
-            matched_rank_cmd = cmd_key
-            after_rank_cmd = text[len(cmd_key):].strip()
-            break
-    if matched_rank_cmd:
-        target_rank = rank_cmds[matched_rank_cmd]
-        is_up = matched_rank_cmd.startswith('رفع')
-        tf, err = await resolve_target(msg, after_rank_cmd)
-        if err or not tf:
-            await send(chat_id, err or '⚠️ رد على رسالة الشخص أو اكتب @يوزره', reply)
+    if text in rank_cmds:
+        if not msg.get('reply_to_message'):
+            await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
             return
-        if target_rank == 'مالك اساسي':
+        tf = msg['reply_to_message']['from']
+        target_rank = rank_cmds[text]
+        is_up = text.startswith('رفع')
+        if target_rank == 'مالك أساسي':
             if not await is_group_creator(chat_id, user_id):
-                await send(chat_id, '⛔ رفع مالك اساسي للمالك الأصلي للمجموعة فقط', reply)
+                await send(chat_id, '⛔ رفع مالك أساسي للمالك الأصلي للمجموعة فقط', reply)
                 return
         else:
             if not (await is_master(data, chat_id, user_id)):
@@ -2471,13 +2368,10 @@ async def process_cmd(msg, data, state, text, settings):
     # ===========================
     if not settings['disable_fun']:
         fun_match = re.match(r'^رفع\s+(.+)$', text)
-        fun_rank_starters = ['مالك', 'ادمن', 'أدمن', 'مدير', 'مميز', 'القيود', 'كتم', 'تقييد']
-        if fun_match and msg.get('reply_to_message'):
-            fun_label = fun_match.group(1).strip()
-            is_rank_cmd = any(fun_label == kw or fun_label.startswith(kw + ' ') for kw in fun_rank_starters)
-            if not is_rank_cmd:
-                await send(chat_id, f'✅ تم رفع {mention(msg["reply_to_message"]["from"])} {fun_label} للتسلية 😜', reply)
-                return
+        fun_rank_keywords = ['مالك', 'ادمن', 'مدير', 'مميز', 'القيود', 'كتم', 'تقييد']
+        if fun_match and msg.get('reply_to_message') and fun_match.group(1).strip() not in fun_rank_keywords:
+            await send(chat_id, f'✅ تم رفع {mention(msg["reply_to_message"]["from"])} {fun_match.group(1).strip()} للتسلية 😜', reply)
+            return
 
     # ===========================
     # قائمة الأوامر
@@ -2604,26 +2498,20 @@ async def process_cmd(msg, data, state, text, settings):
     # أوامر الإدارة
     # ===========================
     if await is_admin_up(data, chat_id, user_id):
-        # كتم - يقبل رد أو @يوزر
-        mute_match = re.match(r'^كتم(?:\s+(.+))?$', text)
-        if mute_match:
-            after = mute_match.group(1) or ''
-            tf, err = await resolve_target(msg, after)
-            if err or not tf:
-                await send(chat_id, err or '⚠️ رد على رسالة الشخص أو اكتب كتم @يوزره', reply)
+        if text == 'كتم':
+            if not msg.get('reply_to_message'):
+                await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
                 return
+            tf = msg['reply_to_message']['from']
             await restrict(chat_id, tf['id'], {'can_send_messages': False})
             await send(chat_id, f'🔇 تم كتم {mention(tf)}\nبواسطة {m}', reply)
             return
 
-        # تقييد - يقبل رد أو @يوزر
-        restrict_match = re.match(r'^تقييد(?:\s+(.+))?$', text)
-        if restrict_match:
-            after = restrict_match.group(1) or ''
-            tf, err = await resolve_target(msg, after)
-            if err or not tf:
-                await send(chat_id, err or '⚠️ رد على رسالة الشخص أو اكتب تقييد @يوزره', reply)
+        if text == 'تقييد':
+            if not msg.get('reply_to_message'):
+                await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
                 return
+            tf = msg['reply_to_message']['from']
             await restrict(chat_id, tf['id'], {
                 'can_send_messages': False, 'can_send_media_messages': False,
                 'can_send_polls': False, 'can_send_other_messages': False, 'can_add_web_page_previews': False
@@ -2631,14 +2519,11 @@ async def process_cmd(msg, data, state, text, settings):
             await send(chat_id, f'🚫 تم تقييد {mention(tf)}\nبواسطة {m}', reply)
             return
 
-        # رفع القيود - يقبل رد أو @يوزر
-        lift_match = re.match(r'^(رفع القيود|الغاء الكتم|الغاء التقييد)(?:\s+(.+))?$', text)
-        if lift_match:
-            after = lift_match.group(2) or ''
-            tf, err = await resolve_target(msg, after)
-            if err or not tf:
-                await send(chat_id, err or '⚠️ رد على رسالة الشخص أو اكتب رفع القيود @يوزره', reply)
+        if text in ['رفع القيود', 'الغاء الكتم', 'الغاء التقييد']:
+            if not msg.get('reply_to_message'):
+                await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
                 return
+            tf = msg['reply_to_message']['from']
             await restrict(chat_id, tf['id'], {
                 'can_send_messages': True, 'can_send_media_messages': True,
                 'can_send_polls': True, 'can_send_other_messages': True, 'can_add_web_page_previews': True
@@ -2646,29 +2531,14 @@ async def process_cmd(msg, data, state, text, settings):
             await send(chat_id, f'✅ تم رفع القيود عن {mention(tf)}\nبواسطة {m}', reply)
             return
 
-        # طرد - يقبل رد أو @يوزر
-        kick_match = re.match(r'^طرد(?:\s+(.+))?$', text)
-        if kick_match:
-            after = kick_match.group(1) or ''
-            tf, err = await resolve_target(msg, after)
-            if err or not tf:
-                await send(chat_id, err or '⚠️ رد على رسالة الشخص أو اكتب طرد @يوزره', reply)
+        if text == 'طرد':
+            if not msg.get('reply_to_message'):
+                await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
                 return
+            tf = msg['reply_to_message']['from']
             await ban(chat_id, tf['id'])
             await unban(chat_id, tf['id'])
             await send(chat_id, f'👢 تم طرد {mention(tf)}\nبواسطة {m}', reply)
-            return
-
-        # حظر (بان) - يقبل رد أو @يوزر
-        ban_match = re.match(r'^حظر(?:\s+(.+))?$', text)
-        if ban_match:
-            after = ban_match.group(1) or ''
-            tf, err = await resolve_target(msg, after)
-            if err or not tf:
-                await send(chat_id, err or '⚠️ رد على رسالة الشخص أو اكتب حظر @يوزره', reply)
-                return
-            await ban(chat_id, tf['id'])
-            await send(chat_id, f'🚷 تم حظر {mention(tf)}\nبواسطة {m}', reply)
             return
 
         if text == 'مسح':
