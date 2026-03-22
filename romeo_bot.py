@@ -165,9 +165,9 @@ def get_settings(data, chat_id):
         'lock_repeat': False, 'lock_mention': False, 'lock_numbers': False, 'lock_stickers': False,
         'lock_animated': False, 'lock_chat': False, 'lock_join': False,
         'lock_external_reply': False, 'lock_quote': False,
-        'disable_id': False, 'disable_service': False, 'disable_fun': False,
+        'disable_id': False, 'disable_service': False, 'disable_fun': True,
         'disable_welcome': False, 'disable_link': False, 'disable_auto_replies': False,
-        'disable_games': False,
+        'disable_games': True,
         'lock_nsfw': False,
         'lock_nsfw_restrict': False,
         'lock_nsfw_warn': False,
@@ -225,7 +225,7 @@ def reset_warnings(data, chat_id, user_id):
         data['user_warnings'][cid] = {}
     data['user_warnings'][cid][uid] = 0
 
-RANKS = {'عضو': 0, 'مميز': 1, 'ادمن': 2, 'أدمن': 2, 'مدير': 3, 'مالك': 4, 'مالك أساسي': 5}
+RANKS = {'عضو': 0, 'مميز': 1, 'ادمن': 2, 'أدمن': 2, 'مدير': 3, 'مالك': 4, 'مالك اساسي': 5, 'مالك أساسي': 5}
 
 def rank_level(r):
     return RANKS.get(r, 0)
@@ -420,11 +420,40 @@ async def is_master(data, chat_id, user_id):
     m = await get_chat_member(chat_id, user_id)
     if m and m.get('status') == 'creator':
         return True
-    return rank_level(get_rank(data, chat_id, user_id)) >= rank_level('مالك أساسي')
+    return rank_level(get_rank(data, chat_id, user_id)) >= rank_level('مالك اساسي')
 
 async def is_group_creator(chat_id, user_id):
     m = await get_chat_member(chat_id, user_id)
     return m and m.get('status') == 'creator'
+
+async def resolve_target(msg, text_after_cmd):
+    """يرجع (from_dict, error_text) - يقبل رد على رسالة أو @يوزر أو ID"""
+    # إذا كان رد على رسالة
+    if msg.get('reply_to_message'):
+        tf = msg['reply_to_message'].get('from', {})
+        if tf:
+            return tf, None
+    # إذا كان @يوزر
+    target_str = (text_after_cmd or '').strip()
+    if target_str.startswith('@'):
+        username = target_str.lstrip('@')
+        try:
+            info = await api_call('getChat', {'chat_id': f'@{username}'})
+            if info and info.get('id'):
+                return {
+                    'id': info['id'],
+                    'first_name': info.get('first_name') or info.get('title') or username,
+                    'last_name': info.get('last_name', ''),
+                    'username': info.get('username', username)
+                }, None
+        except:
+            pass
+        return None, f'⚠️ لم أجد المستخدم @{username}'
+    # إذا كان ID رقمي
+    if target_str.isdigit():
+        uid = int(target_str)
+        return {'id': uid, 'first_name': str(uid), 'last_name': '', 'username': ''}, None
+    return None, '⚠️ رد على رسالة الشخص أو اكتب @يوزره'
 
 # ===========================
 # NSFW IMAGE DETECTION
@@ -444,7 +473,7 @@ async def check_image_nsfw(file_id):
         session = await get_session()
         params = {
             'url': file_url,
-            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content',
+            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content,id-document',
             'api_user': SIGHTENGINE_API_USER,
             'api_secret': SIGHTENGINE_API_SECRET
         }
@@ -454,6 +483,15 @@ async def check_image_nsfw(file_id):
             result = await res.json()
             if result.get('status') != 'success':
                 return False, None
+
+            # رصد الوثائق الحكومية عبر موديل id-document المتخصص
+            id_doc = result.get('id-document', {})
+            if id_doc:
+                doc_type = id_doc.get('type', '')
+                doc_prob = id_doc.get('prob', 0)
+                if doc_prob > 0.3 or doc_type in ('id', 'passport', 'driver_license', 'id_card', 'residence_permit'):
+                    return True, 'وثيقة حكومية (هوية/جواز)'
+
             nudity = result.get('nudity', {})
             suggestive_classes = nudity.get('suggestive_classes', {})
             if (
@@ -497,32 +535,39 @@ async def check_image_nsfw(file_id):
                     'passport', 'passeport', 'reisepass', 'passaporto', 'pasaporte',
                     'national id', 'national identity', 'nationalausweis',
                     'driver license', "driver's license", 'driving licence',
-                    'identity card', 'carte nationale', 'carte d\'identite',
+                    'identity card', 'carte nationale', "carte d'identite",
                     'personalausweis', 'bundesrepublik', 'republique francaise',
                     'cedula de identidad', 'cedula ciudadania',
+                    'dowod osobisty', 'dowod', 'osobisty', 'id card', 'id number',
+                    'government id', 'national card', 'residence permit',
                     'رقم الهوية', 'هوية وطنية', 'بطاقة هوية',
                     'جواز السفر', 'رخصة القيادة', 'بطاقة شخصية',
                     'الرقم القومي', 'رقم جواز', 'وثيقة سفر',
                     'kingdom of saudi', 'المملكة العربية', 'الجمهورية العربية',
                     'جمهورية العراق', 'جمهورية مصر', 'دولة الإمارات',
                     'جمهورية تونس', 'المملكة المغربية', 'الجمهورية الجزائرية',
+                    'rzeczpospolita', 'polska', 'republic of poland',
+                    'bundesrepublik deutschland', 'kingdom of', 'united kingdom',
                 ]
                 for kw in strong_id_keywords:
                     if kw in detected_text:
                         return True, 'وثيقة حكومية (هوية/جواز)'
-                # كلمات تراكمية - يكفي وجود 2 منها
+                # كلمات تراكمية - يكفي وجود 1 منها مع نمط MRZ أو وجود 2 منها
                 soft_id_keywords = [
                     'republic', 'nationality', 'date of birth', 'expiry', 'expires',
                     'surname', 'given name', 'given names', 'personal number',
                     'place of birth', 'identification', 'mrz', 'citizen',
                     'document no', 'doc no', 'document number', 'sex / sexe',
-                    'dowod', 'osobisty', 'ausweis', 'republique', 'dni',
+                    'ausweis', 'republique', 'dni', 'pesel', 'nazwisko', 'imiona',
+                    'obywatelstwo', 'organ wydajacy', 'data wydania', 'data urodzenia',
                     'الجنسية', 'تاريخ الميلاد', 'تاريخ الانتهاء', 'تاريخ الإصدار',
                     'مكان الميلاد', 'نمرة الوثيقة', 'رقم الوثيقة',
                     'الاسم الأول', 'اسم الأب', 'الاسم الكامل',
                 ]
                 soft_count = sum(1 for kw in soft_id_keywords if kw in detected_text)
-                if soft_count >= 2:
+                # رصد نمط MRZ (سطر الماكينة في أسفل الجواز/الهوية)
+                mrz_pattern = re.search(r'[A-Z<]{15,}', ' '.join([t.get('content', '') for t in detected_items]))
+                if mrz_pattern or soft_count >= 2:
                     return True, 'وثيقة حكومية (هوية/جواز)'
             return False, None
     except Exception as e:
@@ -2137,10 +2182,13 @@ async def process_cmd(msg, data, state, text, settings):
         return
 
     # الأعضاء العاديون: إذا حاولوا استخدام أوامر الأدمن، أخبرهم برتبتهم
-    ADMIN_CMD_PREFIXES = ['قفل ', 'فتح ', 'تعطيل ', 'تفعيل ', 'رفع مالك', 'تنزيل مالك',
-        'رفع مدير', 'تنزيل مدير', 'رفع ادمن', 'تنزيل ادمن', 'رفع مميز', 'تنزيل مميز']
+    ADMIN_CMD_PREFIXES = ['قفل ', 'فتح ', 'تعطيل ', 'تفعيل ',
+        'رفع مالك اساسي', 'تنزيل مالك اساسي', 'رفع مالك أساسي', 'تنزيل مالك أساسي',
+        'رفع مالك', 'تنزيل مالك',
+        'رفع مدير', 'تنزيل مدير', 'رفع ادمن', 'تنزيل ادمن', 'رفع مميز', 'تنزيل مميز',
+        'كتم ', 'تقييد ', 'طرد ', 'حظر ', 'رفع القيود ', 'الغاء الكتم ', 'الغاء التقييد ']
     ADMIN_CMD_EXACT = ['التنظيف', 'اضف رد', 'مسح رد', 'كتم', 'تقييد', 'رفع القيود',
-        'الغاء الكتم', 'الغاء التقييد', 'طرد', 'مسح', 'قفل امر', 'اضف امر', 'الاوامر', 'اوامر']
+        'الغاء الكتم', 'الغاء التقييد', 'طرد', 'حظر', 'مسح', 'قفل امر', 'اضف امر', 'الاوامر', 'اوامر']
     is_admin_cmd = text in ADMIN_CMD_EXACT or any(text.startswith(p) for p in ADMIN_CMD_PREFIXES)
     if is_member_only and is_admin_cmd:
         await send(chat_id, f'⛔ {m} رتبتك <b>عضو</b> وما تقدر تستخدم هذا الأمر', reply)
@@ -2335,22 +2383,30 @@ async def process_cmd(msg, data, state, text, settings):
     # أوامر الرتب (تُفحص قبل التسلية)
     # ===========================
     rank_cmds = {
-        'رفع مالك أساسي': 'مالك أساسي', 'تنزيل مالك أساسي': 'عضو',
+        'رفع مالك اساسي': 'مالك اساسي', 'تنزيل مالك اساسي': 'عضو',
+        'رفع مالك أساسي': 'مالك اساسي', 'تنزيل مالك أساسي': 'عضو',
         'رفع مالك': 'مالك', 'تنزيل مالك': 'عضو',
         'رفع مدير': 'مدير', 'تنزيل مدير': 'عضو',
         'رفع ادمن': 'ادمن', 'تنزيل ادمن': 'عضو',
         'رفع مميز': 'مميز', 'تنزيل مميز': 'عضو'
     }
-    if text in rank_cmds:
-        if not msg.get('reply_to_message'):
-            await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
+    matched_rank_cmd = None
+    after_rank_cmd = ''
+    for cmd_key in rank_cmds:
+        if text == cmd_key or text.startswith(cmd_key + ' '):
+            matched_rank_cmd = cmd_key
+            after_rank_cmd = text[len(cmd_key):].strip()
+            break
+    if matched_rank_cmd:
+        target_rank = rank_cmds[matched_rank_cmd]
+        is_up = matched_rank_cmd.startswith('رفع')
+        tf, err = await resolve_target(msg, after_rank_cmd)
+        if err or not tf:
+            await send(chat_id, err or '⚠️ رد على رسالة الشخص أو اكتب @يوزره', reply)
             return
-        tf = msg['reply_to_message']['from']
-        target_rank = rank_cmds[text]
-        is_up = text.startswith('رفع')
-        if target_rank == 'مالك أساسي':
+        if target_rank == 'مالك اساسي':
             if not await is_group_creator(chat_id, user_id):
-                await send(chat_id, '⛔ رفع مالك أساسي للمالك الأصلي للمجموعة فقط', reply)
+                await send(chat_id, '⛔ رفع مالك اساسي للمالك الأصلي للمجموعة فقط', reply)
                 return
         else:
             if not (await is_master(data, chat_id, user_id)):
@@ -2368,10 +2424,13 @@ async def process_cmd(msg, data, state, text, settings):
     # ===========================
     if not settings['disable_fun']:
         fun_match = re.match(r'^رفع\s+(.+)$', text)
-        fun_rank_keywords = ['مالك', 'ادمن', 'مدير', 'مميز', 'القيود', 'كتم', 'تقييد']
-        if fun_match and msg.get('reply_to_message') and fun_match.group(1).strip() not in fun_rank_keywords:
-            await send(chat_id, f'✅ تم رفع {mention(msg["reply_to_message"]["from"])} {fun_match.group(1).strip()} للتسلية 😜', reply)
-            return
+        fun_rank_starters = ['مالك', 'ادمن', 'أدمن', 'مدير', 'مميز', 'القيود', 'كتم', 'تقييد']
+        if fun_match and msg.get('reply_to_message'):
+            fun_label = fun_match.group(1).strip()
+            is_rank_cmd = any(fun_label == kw or fun_label.startswith(kw + ' ') for kw in fun_rank_starters)
+            if not is_rank_cmd:
+                await send(chat_id, f'✅ تم رفع {mention(msg["reply_to_message"]["from"])} {fun_label} للتسلية 😜', reply)
+                return
 
     # ===========================
     # قائمة الأوامر
@@ -2498,20 +2557,26 @@ async def process_cmd(msg, data, state, text, settings):
     # أوامر الإدارة
     # ===========================
     if await is_admin_up(data, chat_id, user_id):
-        if text == 'كتم':
-            if not msg.get('reply_to_message'):
-                await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
+        # كتم - يقبل رد أو @يوزر
+        mute_match = re.match(r'^كتم(?:\s+(.+))?$', text)
+        if mute_match:
+            after = mute_match.group(1) or ''
+            tf, err = await resolve_target(msg, after)
+            if err or not tf:
+                await send(chat_id, err or '⚠️ رد على رسالة الشخص أو اكتب كتم @يوزره', reply)
                 return
-            tf = msg['reply_to_message']['from']
             await restrict(chat_id, tf['id'], {'can_send_messages': False})
             await send(chat_id, f'🔇 تم كتم {mention(tf)}\nبواسطة {m}', reply)
             return
 
-        if text == 'تقييد':
-            if not msg.get('reply_to_message'):
-                await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
+        # تقييد - يقبل رد أو @يوزر
+        restrict_match = re.match(r'^تقييد(?:\s+(.+))?$', text)
+        if restrict_match:
+            after = restrict_match.group(1) or ''
+            tf, err = await resolve_target(msg, after)
+            if err or not tf:
+                await send(chat_id, err or '⚠️ رد على رسالة الشخص أو اكتب تقييد @يوزره', reply)
                 return
-            tf = msg['reply_to_message']['from']
             await restrict(chat_id, tf['id'], {
                 'can_send_messages': False, 'can_send_media_messages': False,
                 'can_send_polls': False, 'can_send_other_messages': False, 'can_add_web_page_previews': False
@@ -2519,11 +2584,14 @@ async def process_cmd(msg, data, state, text, settings):
             await send(chat_id, f'🚫 تم تقييد {mention(tf)}\nبواسطة {m}', reply)
             return
 
-        if text in ['رفع القيود', 'الغاء الكتم', 'الغاء التقييد']:
-            if not msg.get('reply_to_message'):
-                await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
+        # رفع القيود - يقبل رد أو @يوزر
+        lift_match = re.match(r'^(رفع القيود|الغاء الكتم|الغاء التقييد)(?:\s+(.+))?$', text)
+        if lift_match:
+            after = lift_match.group(2) or ''
+            tf, err = await resolve_target(msg, after)
+            if err or not tf:
+                await send(chat_id, err or '⚠️ رد على رسالة الشخص أو اكتب رفع القيود @يوزره', reply)
                 return
-            tf = msg['reply_to_message']['from']
             await restrict(chat_id, tf['id'], {
                 'can_send_messages': True, 'can_send_media_messages': True,
                 'can_send_polls': True, 'can_send_other_messages': True, 'can_add_web_page_previews': True
@@ -2531,14 +2599,29 @@ async def process_cmd(msg, data, state, text, settings):
             await send(chat_id, f'✅ تم رفع القيود عن {mention(tf)}\nبواسطة {m}', reply)
             return
 
-        if text == 'طرد':
-            if not msg.get('reply_to_message'):
-                await send(chat_id, '⚠️ رد على رسالة الشخص', reply)
+        # طرد - يقبل رد أو @يوزر
+        kick_match = re.match(r'^طرد(?:\s+(.+))?$', text)
+        if kick_match:
+            after = kick_match.group(1) or ''
+            tf, err = await resolve_target(msg, after)
+            if err or not tf:
+                await send(chat_id, err or '⚠️ رد على رسالة الشخص أو اكتب طرد @يوزره', reply)
                 return
-            tf = msg['reply_to_message']['from']
             await ban(chat_id, tf['id'])
             await unban(chat_id, tf['id'])
             await send(chat_id, f'👢 تم طرد {mention(tf)}\nبواسطة {m}', reply)
+            return
+
+        # حظر (بان) - يقبل رد أو @يوزر
+        ban_match = re.match(r'^حظر(?:\s+(.+))?$', text)
+        if ban_match:
+            after = ban_match.group(1) or ''
+            tf, err = await resolve_target(msg, after)
+            if err or not tf:
+                await send(chat_id, err or '⚠️ رد على رسالة الشخص أو اكتب حظر @يوزره', reply)
+                return
+            await ban(chat_id, tf['id'])
+            await send(chat_id, f'🚷 تم حظر {mention(tf)}\nبواسطة {m}', reply)
             return
 
         if text == 'مسح':
