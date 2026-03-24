@@ -291,6 +291,8 @@ def get_settings(data, chat_id):
         'lock_files': False,
         'lock_channel_usernames': False,
         'lock_all_usernames': False,
+        'lock_contacts': False,
+        'banned_words': [],
         'lock_flash': False,
         'flash_ban_limit': 3,
         'flash_ban_seconds': 30,
@@ -1068,8 +1070,8 @@ menu_texts = {
         'قفل الصوتيات | قفل الاغاني | قفل التحويل\n'
         'قفل الدخول | قفل التاك | قفل الارقام\n'
         'قفل الملصقات | قفل المتحركة | قفل الشات\n'
-        'قفل الملفات | قفل يوزرات القنوات\n'
-        'قفل كل اليوزرات\n'
+        'قفل الملفات | قفل الجهات\n'
+        'قفل يوزرات القنوات | قفل كل اليوزرات\n'
         'قفل الردود الخارجية | قفل الاقتباسات\n'
         'قفل المحتوى المخل | فتح المحتوى المخل\n'
         'قفل المحتوى المخل بالتقييد\n'
@@ -1142,6 +1144,44 @@ async def handle_callback(cb):
 
     if data_cb in menu_texts:
         await edit_msg(chat_id, msg_id, menu_texts[data_cb])
+        return
+
+    if data_cb.startswith('bw_add:') or data_cb.startswith('bw_remove:') or data_cb.startswith('bw_list:'):
+        action, grp_id_str = data_cb.split(':', 1)
+        grp_id = int(grp_id_str)
+        data = load_data()
+        if not await is_admin_up(data, grp_id, user_id):
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '⛔ هذا الأمر للمشرفين فقط', 'show_alert': True})
+            return
+        settings = get_settings(data, grp_id)
+        bw_list = settings.get('banned_words', [])
+        if action == 'bw_list':
+            if not bw_list:
+                await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '📋 لا توجد كلمات محظورة حتى الآن', 'show_alert': True})
+            else:
+                words_text = '\n'.join(f'• {w}' for w in bw_list)
+                await api_call('answerCallbackQuery', {'callback_query_id': cb['id']})
+                await send(grp_id, f'📋 <b>الكلمات المحظورة ({len(bw_list)}):</b>\n\n{words_text}')
+            return
+        state = load_state()
+        cid = str(grp_id)
+        uid = str(user_id)
+        if cid not in state:
+            state[cid] = {}
+        if action == 'bw_add':
+            state[cid][uid] = {'step': 'await_banned_word_add'}
+            save_state(state)
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id']})
+            await send(grp_id, '✏️ أرسل الكلمة المراد حظرها:')
+        elif action == 'bw_remove':
+            if not bw_list:
+                await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '⚠️ لا توجد كلمات محظورة لإزالتها', 'show_alert': True})
+                return
+            state[cid][uid] = {'step': 'await_banned_word_remove'}
+            save_state(state)
+            words_text = '\n'.join(f'• {w}' for w in bw_list)
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id']})
+            await send(grp_id, f'📋 الكلمات المحظورة الحالية:\n\n{words_text}\n\n✏️ أرسل الكلمة المراد إزالتها:')
         return
 
     if data_cb in ('clean_toggle_auto', 'clean_toggle_numbers', 'clean_toggle_clutter',
@@ -1978,32 +2018,28 @@ async def media_mod(msg, data, settings):
                     await send(chat_id, '‹‹ تم تقييد العضو ' + m + ' بسبب تجاوز عدد التحذيرات .')
                 else:
                     await send(chat_id,
-                        '‹‹ تحذير ' + str(user_warn['count']) + '/' + str(warn_max) + ' ‹ ' + uname + ' ›\n'
+                        '‹‹ تحذير ' + str(user_warn['count']) + '/' + str(warn_max) + '\n'
                         '‹‹ ممنوع التكرار هنا .',
                         reply)
             else:
-                await send(chat_id, '‹‹ عذراً عزيزي ‹ ' + uname + ' ›\n‹‹ ممنوع التكرار هنا .', reply)
+                await send(chat_id, '‹‹ ممنوع التكرار هنا .', reply)
             return
 
     if settings.get('lock_external_reply') and msg.get('external_reply'):
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الردود الخارجية هنا .', reply)
         await delete(chat_id, msg_id)
         return
 
     if settings.get('lock_quote') and msg.get('quote'):
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الاقتباس هنا .', reply)
         await delete(chat_id, msg_id)
         return
 
     is_forward = msg.get('forward_from') or msg.get('forward_from_chat') or msg.get('forward_sender_name')
     if is_forward and settings['lock_forward']:
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع التوجيه والتحويل هنا .', reply)
         await delete(chat_id, msg_id)
         return
 
     if msg.get('document'):
         if settings.get('lock_files'):
-            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الملفات هنا .', reply)
             await delete(chat_id, msg_id)
             return
         if settings.get('clean_auto') and settings.get('clean_files'):
@@ -2073,7 +2109,6 @@ async def media_mod(msg, data, settings):
                     await delete(chat_id, msg_id)
                     return
         if settings['lock_videos']:
-            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الصور المتحركة هنا .', reply)
             await delete(chat_id, msg_id)
             return
         if settings.get('clean_auto'):
@@ -2145,7 +2180,6 @@ async def media_mod(msg, data, settings):
                     return
 
         if settings['lock_photos']:
-            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الصور هنا .', reply)
             await delete(chat_id, msg_id)
             return
 
@@ -2220,7 +2254,6 @@ async def media_mod(msg, data, settings):
                 await delete(chat_id, msg_id)
                 return
         if settings['lock_videos']:
-            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الفيديوهات هنا .', reply)
             await delete(chat_id, msg_id)
             return
         if settings.get('clean_auto'):
@@ -2228,12 +2261,14 @@ async def media_mod(msg, data, settings):
         return
 
     if msg.get('voice') and settings['lock_audio']:
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الرسائل الصوتية هنا .', reply)
         await delete(chat_id, msg_id)
         return
 
     if msg.get('audio') and settings['lock_music']:
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الاغاني هنا .', reply)
+        await delete(chat_id, msg_id)
+        return
+
+    if msg.get('contact') and settings.get('lock_contacts'):
         await delete(chat_id, msg_id)
         return
 
@@ -2284,11 +2319,9 @@ async def media_mod(msg, data, settings):
                 return
 
         if is_animated and settings['lock_animated']:
-            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الملصقات المتحركة هنا .', reply)
             await delete(chat_id, msg_id)
             return
         if not is_animated and settings['lock_stickers']:
-            await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الملصقات هنا .', reply)
             await delete(chat_id, msg_id)
             return
         if settings.get('clean_auto'):
@@ -2314,64 +2347,52 @@ async def content_mod(msg, data, settings):
     uname = name(from_)
 
     if settings.get('lock_external_reply') and msg.get('external_reply'):
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الردود الخارجية هنا .', reply)
         await delete(chat_id, msg_id)
         return True
 
     if settings.get('lock_quote') and msg.get('quote'):
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الاقتباس هنا .', reply)
         await delete(chat_id, msg_id)
         return True
 
     is_forward = msg.get('forward_from') or msg.get('forward_from_chat') or msg.get('forward_sender_name')
     if is_forward and settings['lock_forward']:
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع التوجيه والتحويل هنا .', reply)
         await delete(chat_id, msg_id)
         return True
 
     swears = ['انيجك', 'انيج امك', 'كسمك', 'عير بابوك', 'عير بامك', 'قحبه', 'كحبه', 'شرموط', 'شرموطه', 'زبفيك', 'عيرك', 'كسي', 'زبي', 'عيري']
     if settings['lock_swear'] and any(w in text for w in swears):
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع السب هنا .', reply)
         await delete(chat_id, msg_id)
         return True
 
     if settings['lock_links'] and re.search(r'(https?://|t\.me/|www\.)', text, re.IGNORECASE):
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الروابط هنا .', reply)
         await delete(chat_id, msg_id)
         return True
 
     if settings['lock_mention'] and re.search(r'@\w+', text):
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع التاك هنا .', reply)
         await delete(chat_id, msg_id)
         return True
 
     if settings['lock_numbers'] and re.search(r'(?<!\d)\+?\d{9,12}(?!\d)', text):
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الارقام هنا .', reply)
         await delete(chat_id, msg_id)
         return True
 
     if settings['lock_clutter'] and len(text) > 1000:
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال الرسائل الطويلة هنا .', reply)
         await delete(chat_id, msg_id)
         return True
 
     if settings['lock_english'] and re.search(r'[a-zA-Z]', text):
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع الكتابة بالانجليزية هنا .', reply)
         await delete(chat_id, msg_id)
         return True
 
     if settings['lock_chinese'] and re.search(r'[\u4e00-\u9fff]', text):
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع اللغة الصينية هنا .', reply)
         await delete(chat_id, msg_id)
         return True
 
     if settings['lock_russian'] and re.search(r'[\u0400-\u04FF]', text):
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع اللغة الروسية هنا .', reply)
         await delete(chat_id, msg_id)
         return True
 
     if settings.get('lock_all_usernames') and re.search(r'@\w+', text):
-        await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال اليوزرات هنا .', reply)
         await delete(chat_id, msg_id)
         return True
 
@@ -2381,11 +2402,18 @@ async def content_mod(msg, data, settings):
             try:
                 ch = await api_call('getChat', {'chat_id': f'@{uname_found}'})
                 if ch and ch.get('type', '') in ['channel', 'supergroup', 'group']:
-                    await send(chat_id, f'‹‹ عذراً عزيزي ‹ {uname} ›\n‹‹ ممنوع ارسال يوزرات القنوات والمجموعات هنا .', reply)
                     await delete(chat_id, msg_id)
                     return True
             except:
                 pass
+
+    bw_list = settings.get('banned_words', [])
+    if bw_list and text:
+        text_lower = text.lower()
+        for bw in bw_list:
+            if bw in text_lower:
+                await delete(chat_id, msg_id)
+                return True
 
     if settings['lock_repeat']:
         cid_key = str(chat_id)
@@ -2426,7 +2454,7 @@ async def content_mod(msg, data, settings):
             repeat_tracker[cid_key][uid_key].append(now_ts)
             if len(repeat_tracker[cid_key][uid_key]) > max_msgs:
                 repeat_tracker[cid_key][uid_key] = []
-                await send(chat_id, '‹‹ عذراً عزيزي ‹ ' + uname + ' ›\n‹‹ ممنوع التكرار هنا .', reply)
+                await send(chat_id, '‹‹ ممنوع التكرار هنا .', reply)
                 await delete(chat_id, msg_id)
                 return True
 
@@ -2460,7 +2488,7 @@ async def content_mod(msg, data, settings):
             else:
                 await delete(chat_id, msg_id)
                 await send(chat_id,
-                    '‹‹ تحذير ' + str(user_warn['count']) + '/' + str(warn_max) + ' ‹ ' + uname + ' ›\n'
+                    '‹‹ تحذير ' + str(user_warn['count']) + '/' + str(warn_max) + '\n'
                     '‹‹ ممنوع التكرار هنا .',
                     reply)
                 return True
@@ -2538,17 +2566,18 @@ async def process_cmd(msg, data, state, text, settings):
     ADMIN_CMD_PREFIXES = ['قفل ', 'فتح ', 'تعطيل ', 'تفعيل ', 'رفع مالك', 'تنزيل مالك',
         'رفع مدير', 'تنزيل مدير', 'رفع ادمن', 'تنزيل ادمن', 'رفع مميز', 'تنزيل مميز']
     ADMIN_CMD_EXACT = ['التنظيف', 'اضف رد', 'مسح رد', 'كتم', 'تقييد', 'رفع القيود',
-        'الغاء الكتم', 'الغاء التقييد', 'طرد', 'مسح', 'قفل امر', 'اضف امر', 'الاوامر', 'اوامر']
+        'الغاء الكتم', 'الغاء التقييد', 'طرد', 'مسح', 'قفل امر', 'اضف امر', 'الاوامر', 'اوامر',
+        'الكلمات المحظورة']
     is_admin_cmd = text in ADMIN_CMD_EXACT or any(text.startswith(p) for p in ADMIN_CMD_PREFIXES)
     if is_member_only and is_admin_cmd:
-        await send(chat_id, f'⛔ {m} رتبتك <b>عضو</b> وما تقدر تستخدم هذا الأمر', reply)
+        await send(chat_id, '⛔ رتبتك <b>عضو</b> وما تقدر تستخدم هذا الأمر', reply)
         return
 
     locked_cmds = settings.get('locked_commands', {})
     if text in locked_cmds:
         required_rank = locked_cmds[text]
         if rank_level(user_rank) < rank_level(required_rank) and not tg_admin and not dev:
-            await send(chat_id, f'⛔ {m} رتبتك <b>{user_rank}</b> وهذا الأمر مخصص لرتبة <b>{required_rank}</b> فقط', reply)
+            await send(chat_id, f'⛔ رتبتك <b>{user_rank}</b> وهذا الأمر مخصص لرتبة <b>{required_rank}</b> فقط', reply)
             return
 
     # رتبتي / رتبته - مسموح للجميع بمن فيهم الأعضاء
@@ -2597,6 +2626,29 @@ async def process_cmd(msg, data, state, text, settings):
             return
         clean_text, clean_keyboard = build_clean_menu(settings)
         await send(chat_id, clean_text, {'reply_markup': clean_keyboard})
+        return
+
+    # الكلمات المحظورة - للمشرفين والمالك
+    if text == 'الكلمات المحظورة':
+        if not await is_admin_up(data, chat_id, user_id):
+            await send(chat_id, '⛔ هذا الأمر للمشرفين فقط', reply)
+            return
+        bw_list = settings.get('banned_words', [])
+        count = len(bw_list)
+        bw_keyboard = {
+            'inline_keyboard': [
+                [
+                    {'text': '➕ اضافة كلمة', 'callback_data': f'bw_add:{chat_id}'},
+                    {'text': '➖ ازالة كلمة', 'callback_data': f'bw_remove:{chat_id}'},
+                ],
+                [
+                    {'text': f'📋 قائمة الكلمات ({count})', 'callback_data': f'bw_list:{chat_id}'},
+                ],
+            ]
+        }
+        await send(chat_id,
+            f'🚫 <b>الكلمات المحظورة</b>\n\nعدد الكلمات المحظورة حالياً: <b>{count}</b>\nاختر من الأزرار أدناه:',
+            {'reply_markup': bw_keyboard, 'reply_to_message_id': msg_id})
         return
 
     # ===========================
@@ -2891,6 +2943,7 @@ async def process_cmd(msg, data, state, text, settings):
             'قفل المحتوى المخل بالتحذير': 'lock_nsfw_warn', 'فتح المحتوى المخل بالتحذير': 'lock_nsfw_warn',
             'قفل الوثائق الحكومية': 'lock_id_documents', 'فتح الوثائق الحكومية': 'lock_id_documents',
             'قفل الملفات': 'lock_files', 'فتح الملفات': 'lock_files',
+            'قفل الجهات': 'lock_contacts', 'فتح الجهات': 'lock_contacts',
             'قفل يوزرات القنوات': 'lock_channel_usernames', 'فتح يوزرات القنوات': 'lock_channel_usernames',
             'قفل كل اليوزرات': 'lock_all_usernames', 'فتح كل اليوزرات': 'lock_all_usernames',
             'قفل الردود الخارجية': 'lock_external_reply', 'فتح الردود الخارجية': 'lock_external_reply',
@@ -3763,6 +3816,38 @@ async def handle_state(msg, data, state, user_state, text):
         data['custom_commands'][cid][text] = real_cmd
         del state[cid][uid]
         await send(chat_id, f'✅ تم حفظ الامر <b>{real_cmd}</b> بامر <b>{text}</b> بنجاح', reply)
+
+    elif user_state['step'] == 'await_banned_word_add':
+        if not text:
+            await send(chat_id, '⚠️ أرسل الكلمة المراد حظرها:', reply)
+            return
+        word = text.strip().lower()
+        settings = get_settings(data, chat_id)
+        bw_list = settings.get('banned_words', [])
+        if word in bw_list:
+            del state[cid][uid]
+            await send(chat_id, f'⚠️ الكلمة <b>{word}</b> موجودة أصلاً في قائمة المحظورات', reply)
+            return
+        bw_list.append(word)
+        settings['banned_words'] = bw_list
+        del state[cid][uid]
+        await send(chat_id, f'✅ تم إضافة الكلمة <b>{word}</b> إلى قائمة الكلمات المحظورة', reply)
+
+    elif user_state['step'] == 'await_banned_word_remove':
+        if not text:
+            await send(chat_id, '⚠️ أرسل الكلمة المراد إزالتها:', reply)
+            return
+        word = text.strip().lower()
+        settings = get_settings(data, chat_id)
+        bw_list = settings.get('banned_words', [])
+        if word not in bw_list:
+            del state[cid][uid]
+            await send(chat_id, f'⚠️ الكلمة <b>{word}</b> غير موجودة في قائمة المحظورات', reply)
+            return
+        bw_list.remove(word)
+        settings['banned_words'] = bw_list
+        del state[cid][uid]
+        await send(chat_id, f'✅ تم إزالة الكلمة <b>{word}</b> من قائمة الكلمات المحظورة', reply)
 
 # ===========================
 # HTTP SERVER
