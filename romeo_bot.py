@@ -24,20 +24,32 @@ SIGHTENGINE_API_SECRET = 'RFozDT5M3VYmccC2rcArKqnMPWPCKJfE'
 DEVELOPER_USERNAME = 'c9aac'
 
 _session = None
+_session_created_at = 0
+SESSION_MAX_AGE = 600  # تجديد الجلسة كل 10 دقائق
 
 async def get_session():
-    global _session
-    if _session is None or _session.closed:
+    global _session, _session_created_at
+    now = time.time()
+    # تجديد الجلسة إذا كانت مغلقة أو انتهى عمرها
+    if _session is None or _session.closed or (now - _session_created_at) > SESSION_MAX_AGE:
+        if _session and not _session.closed:
+            try:
+                await _session.close()
+            except:
+                pass
         connector = aiohttp.TCPConnector(
             limit=200,
             limit_per_host=50,
             ttl_dns_cache=600,
-            keepalive_timeout=30,
+            keepalive_timeout=60,
+            enable_cleanup_closed=True,
         )
         _session = aiohttp.ClientSession(
             connector=connector,
-            timeout=aiohttp.ClientTimeout(total=15),
+            timeout=aiohttp.ClientTimeout(total=20),
         )
+        _session_created_at = now
+        print(f'✅ تم إنشاء جلسة HTTP جديدة')
     return _session
 
 clean_queue = {}
@@ -473,13 +485,32 @@ def get_ahkam_state(data, chat_id):
 # ===========================
 
 async def api_call(method, params):
-    try:
-        session = await get_session()
-        async with session.post(f'{API}/{method}', json=params) as res:
-            data = await res.json()
-            return data['result'] if data.get('ok') else None
-    except:
-        return None
+    for attempt in range(3):
+        try:
+            session = await get_session()
+            async with session.post(f'{API}/{method}', json=params) as res:
+                data = await res.json()
+                if data.get('ok'):
+                    return data['result']
+                else:
+                    err = data.get('description', '')
+                    if 'Too Many Requests' not in err:
+                        pass
+                    return None
+        except asyncio.TimeoutError:
+            print(f'⏱ Timeout في {method} (محاولة {attempt+1}/3)')
+            if attempt < 2:
+                await asyncio.sleep(2 ** attempt)
+        except aiohttp.ClientConnectionError as e:
+            print(f'🔌 خطأ اتصال في {method}: {e} (محاولة {attempt+1}/3)')
+            global _session
+            _session = None
+            if attempt < 2:
+                await asyncio.sleep(2 ** attempt)
+        except Exception as e:
+            print(f'❌ خطأ في {method}: {type(e).__name__}: {e}')
+            return None
+    return None
 
 async def send(chat_id, text, extra=None):
     params = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
@@ -2571,14 +2602,14 @@ async def process_cmd(msg, data, state, text, settings):
         'الكلمات المحظورة']
     is_admin_cmd = text in ADMIN_CMD_EXACT or any(text.startswith(p) for p in ADMIN_CMD_PREFIXES)
     if is_member_only and is_admin_cmd:
-        await send(chat_id, '⛔ رتبتك <b>عضو</b> وما تقدر تستخدم هذا الأمر', reply)
+        await send(chat_id, '• عذراً الامر يخص ‹ ادمن › فقط .', reply)
         return
 
     locked_cmds = settings.get('locked_commands', {})
     if text in locked_cmds:
         required_rank = locked_cmds[text]
         if rank_level(user_rank) < rank_level(required_rank) and not tg_admin and not dev:
-            await send(chat_id, f'⛔ رتبتك <b>{user_rank}</b> وهذا الأمر مخصص لرتبة <b>{required_rank}</b> فقط', reply)
+            await send(chat_id, f'• عذراً الامر يخص ‹ {required_rank} › فقط .', reply)
             return
 
     # رتبتي / رتبته - مسموح للجميع بمن فيهم الأعضاء
@@ -2595,12 +2626,18 @@ async def process_cmd(msg, data, state, text, settings):
                         rank = 'مالك المجموعة'
                     elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
                         rank = 'مشرف'
-                await send(chat_id, f'🏅 رتبة {name(tf)}: <b>{rank}</b>', reply)
+                await send(chat_id, f'• رتبته هي ← <b>{rank}</b>', reply)
             else:
                 if await is_developer(user_id, from_.get('username')):
-                    await send(chat_id, f'🏅 رتبتك: <b>مطور</b>', reply)
+                    await send(chat_id, f'• رتبتك ← <b>مطور</b>', reply)
                 else:
-                    await send(chat_id, f'🏅 رتبتك: <b>{get_rank(data, chat_id, user_id)}</b>', reply)
+                    rank_me = get_rank(data, chat_id, user_id)
+                    mem_me = await get_chat_member(chat_id, user_id)
+                    if mem_me and mem_me.get('status') == 'creator':
+                        rank_me = 'مالك المجموعة'
+                    elif mem_me and mem_me.get('status') == 'administrator' and rank_me == 'عضو':
+                        rank_me = 'مشرف'
+                    await send(chat_id, f'• رتبتك ← <b>{rank_me}</b>', reply)
             return
 
         if text in ['رتبته', 'رتبتها']:
@@ -2615,7 +2652,7 @@ async def process_cmd(msg, data, state, text, settings):
                         rank = 'مالك المجموعة'
                     elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
                         rank = 'مشرف'
-                await send(chat_id, f'🏅 رتبة {name(tf)}: <b>{rank}</b>', reply)
+                await send(chat_id, f'• رتبته هي ← <b>{rank}</b>', reply)
             else:
                 await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة رتبته', reply)
             return
@@ -3875,7 +3912,7 @@ async def register_webhook():
 
 async def webhook_watchdog():
     while True:
-        await asyncio.sleep(600)
+        await asyncio.sleep(180)  # كل 3 دقائق بدل 10
         try:
             info = await api_call('getWebhookInfo', {})
             url = (info or {}).get('url', '')
@@ -3891,6 +3928,28 @@ async def webhook_watchdog():
                 print(f'✅ Webhook يعمل | تحديثات معلّقة: {pending}')
         except Exception as e:
             print(f'Webhook watchdog error: {e}')
+
+async def keep_alive_loop():
+    """يحيّي الخادم كل دقيقتين لمنع النوم وإبقاء الاتصالات نشطة"""
+    await asyncio.sleep(20)  # انتظر بداية الخادم
+    while True:
+        try:
+            # ping نفسه عبر HTTP للحفاظ على نشاط Replit
+            try:
+                s = await get_session()
+                async with s.get(
+                    f'http://localhost:{PORT}/health',
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as r:
+                    pass
+            except:
+                pass
+            # ping تليغرام للحفاظ على الاتصال
+            await api_call('getMe', {})
+            print(f'💓 Keepalive OK - {datetime.now().strftime("%H:%M:%S")}')
+        except Exception as e:
+            print(f'Keepalive error: {e}')
+        await asyncio.sleep(120)  # كل دقيقتين
 
 async def webhook_handler(request):
     if request.method == 'POST' and request.path == '/webhook':
@@ -3922,9 +3981,11 @@ async def main():
     print(f'Romeo Bot running on port {PORT}')
     asyncio.create_task(auto_clean_loop())
     asyncio.create_task(_db_flush_loop())
+    asyncio.create_task(keep_alive_loop())
     await asyncio.sleep(2)
     await register_webhook()
     asyncio.create_task(webhook_watchdog())
+    print('✅ جميع المهام تعمل — البوت جاهز')
     await asyncio.Event().wait()
 
 if __name__ == '__main__':
