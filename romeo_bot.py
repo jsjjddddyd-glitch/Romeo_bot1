@@ -2087,7 +2087,6 @@ async def handle_start(msg):
     add_url = f'https://t.me/{bot_username}?startgroup=true&admin=change_info+delete_messages+restrict_members+invite_users+pin_messages+manage_topics+manage_video_chats'
     keyboard = {'inline_keyboard': [
         [{'text': '➕ اضفني لمجموعتك', 'url': add_url}],
-        [{'text': '📋 مجموعاتي', 'callback_data': 'show_my_groups'}],
         [{'text': '👨‍💻 المطور', 'url': 'https://t.me/c9aac'}]
     ]}
     text = (
@@ -2548,7 +2547,7 @@ async def content_mod(msg, data, settings):
         await delete(chat_id, msg_id)
         return True
 
-    swears = ['انيجك', 'انيج امك', 'كسمك', 'عير بابوك', 'عير بامك', 'قحبه', 'كحبه', 'شرموط', 'شرموطه', 'زبفيك', 'عيرك', 'كسي', 'زبي', 'عيري']
+    swears = ['انيجك', 'انيج امك', 'كسمك', 'عير بابوك', 'عير بامك', 'قحبه', 'كحبه', 'شرموط', 'شرموطه', 'زبفيك', 'عيرك', 'كسي', 'زبي', 'عيري', 'كس', 'عيربمك', 'عير', 'عيربيك', 'ابن الشرموطه', 'ممحونه', 'ممحون', 'كسختك', 'كسعرضك', 'ابنلكحبه']
     if settings['lock_swear'] and any(w in text for w in swears):
         await delete(chat_id, msg_id)
         return True
