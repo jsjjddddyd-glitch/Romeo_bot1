@@ -314,6 +314,7 @@ def get_settings(data, chat_id):
         'lock_channel_usernames': False,
         'lock_all_usernames': False,
         'lock_contacts': False,
+        'lock_online': False,
         'banned_words': [],
         'bw_warn_mode': False,
         'bw_restrict_mode': False,
@@ -1132,6 +1133,7 @@ menu_texts = {
         'قفل الملفات | قفل الجهات\n'
         'قفل يوزرات القنوات | قفل كل اليوزرات\n'
         'قفل الردود الخارجية | قفل الاقتباسات\n'
+        'قفل الاونلاين | فتح الاونلاين\n'
         'قفل المحتوى المخل | فتح المحتوى المخل\n'
         'قفل المحتوى المخل بالتقييد\n'
         'قفل المحتوى المخل بالتحذير\n'
@@ -1888,6 +1890,11 @@ async def handle_update(update):
         return
 
     if settings['lock_chat'] and not (await is_tg_admin(chat_id, user_id)) and not (await is_master(data, chat_id, user_id)):
+        await delete(chat_id, msg_id)
+        save_data(data)
+        return
+
+    if settings.get('lock_online') and msg.get('via_bot') and not (await is_tg_admin(chat_id, user_id)) and not (await is_master(data, chat_id, user_id)):
         await delete(chat_id, msg_id)
         save_data(data)
         return
@@ -2806,50 +2813,49 @@ async def process_cmd(msg, data, state, text, settings):
         await send(chat_id, '• عذراً الامر يخص ‹ ادمن › فقط .', reply)
         return
 
-    # رتبتي / رتبته - مسموح للجميع بمن فيهم الأعضاء
-    if not settings['disable_service']:
-        if text in ['رتبة', 'رتبتي', 'رتب']:
-            if msg.get('reply_to_message'):
-                tf = msg['reply_to_message']['from']
-                rank = get_rank(data, chat_id, tf['id'])
-                if await is_developer(tf['id'], tf.get('username')):
-                    rank = 'مطور'
-                else:
-                    mem2 = await get_chat_member(chat_id, tf['id'])
-                    if mem2 and mem2.get('status') == 'creator':
-                        rank = 'مالك المجموعة'
-                    elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
-                        rank = 'مشرف'
-                await send(chat_id, f'• رتبته هي ← <b>{rank}</b>', reply)
+    # رتبتي / رتبته - مسموح للجميع دائماً بغض النظر عن الخدمية
+    if text in ['رتبة', 'رتبتي', 'رتب']:
+        if msg.get('reply_to_message'):
+            tf = msg['reply_to_message']['from']
+            rank = get_rank(data, chat_id, tf['id'])
+            if await is_developer(tf['id'], tf.get('username')):
+                rank = 'مطور'
             else:
-                if await is_developer(user_id, from_.get('username')):
-                    await send(chat_id, f'• رتبتك ← <b>مطور</b>', reply)
-                else:
-                    rank_me = get_rank(data, chat_id, user_id)
-                    mem_me = await get_chat_member(chat_id, user_id)
-                    if mem_me and mem_me.get('status') == 'creator':
-                        rank_me = 'مالك المجموعة'
-                    elif mem_me and mem_me.get('status') == 'administrator' and rank_me == 'عضو':
-                        rank_me = 'مشرف'
-                    await send(chat_id, f'• رتبتك ← <b>{rank_me}</b>', reply)
-            return
+                mem2 = await get_chat_member(chat_id, tf['id'])
+                if mem2 and mem2.get('status') == 'creator':
+                    rank = 'مالك المجموعة'
+                elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
+                    rank = 'مشرف'
+            await send(chat_id, f'• رتبته هي ← <b>{rank}</b>', reply)
+        else:
+            if await is_developer(user_id, from_.get('username')):
+                await send(chat_id, f'• رتبتك ← <b>مطور</b>', reply)
+            else:
+                rank_me = get_rank(data, chat_id, user_id)
+                mem_me = await get_chat_member(chat_id, user_id)
+                if mem_me and mem_me.get('status') == 'creator':
+                    rank_me = 'مالك المجموعة'
+                elif mem_me and mem_me.get('status') == 'administrator' and rank_me == 'عضو':
+                    rank_me = 'مشرف'
+                await send(chat_id, f'• رتبتك ← <b>{rank_me}</b>', reply)
+        return
 
-        if text in ['رتبته', 'رتبتها']:
-            if msg.get('reply_to_message'):
-                tf = msg['reply_to_message']['from']
-                rank = get_rank(data, chat_id, tf['id'])
-                if await is_developer(tf['id'], tf.get('username')):
-                    rank = 'مطور'
-                else:
-                    mem2 = await get_chat_member(chat_id, tf['id'])
-                    if mem2 and mem2.get('status') == 'creator':
-                        rank = 'مالك المجموعة'
-                    elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
-                        rank = 'مشرف'
-                await send(chat_id, f'• رتبته هي ← <b>{rank}</b>', reply)
+    if text in ['رتبته', 'رتبتها']:
+        if msg.get('reply_to_message'):
+            tf = msg['reply_to_message']['from']
+            rank = get_rank(data, chat_id, tf['id'])
+            if await is_developer(tf['id'], tf.get('username')):
+                rank = 'مطور'
             else:
-                await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة رتبته', reply)
-            return
+                mem2 = await get_chat_member(chat_id, tf['id'])
+                if mem2 and mem2.get('status') == 'creator':
+                    rank = 'مالك المجموعة'
+                elif mem2 and mem2.get('status') == 'administrator' and rank == 'عضو':
+                    rank = 'مشرف'
+            await send(chat_id, f'• رتبته هي ← <b>{rank}</b>', reply)
+        else:
+            await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة رتبته', reply)
+        return
 
     # التنظيف - للمالك فقط
     if text == 'التنظيف':
@@ -3192,6 +3198,8 @@ async def process_cmd(msg, data, state, text, settings):
             'قفل الاقتباسات': 'lock_quote', 'فتح الاقتباسات': 'lock_quote',
             'تفعيل حماية التفليش': 'lock_flash', 'تعطيل حماية التفليش': 'lock_flash',
             'تفعيل حمايه التفليش': 'lock_flash', 'تعطيل حمايه التفليش': 'lock_flash',
+            'قفل الاونلاين': 'lock_online', 'فتح الاونلاين': 'lock_online',
+            'قفل الأونلاين': 'lock_online', 'فتح الأونلاين': 'lock_online',
         }
         if text in lock_map:
             is_lock = text.startswith('قفل') or text.startswith('تفعيل')
