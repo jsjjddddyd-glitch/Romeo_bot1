@@ -16,6 +16,7 @@ API = f'https://api.telegram.org/bot{TOKEN}'
 DATA_FILE = './data.json'
 STATE_FILE = './state.json'
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '').rstrip('/')
 
 SIGHTENGINE_API_USER = '130043340'
 SIGHTENGINE_API_SECRET = 'RFozDT5M3VYmccC2rcArKqnMPWPCKJfE'
@@ -3855,6 +3856,42 @@ async def handle_state(msg, data, state, user_state, text):
 
 PORT = int(os.environ.get('PORT', 3000))
 
+async def register_webhook():
+    if not WEBHOOK_URL:
+        print('⚠️ WEBHOOK_URL غير مضبوط — البوت لن يستقبل تحديثات')
+        return False
+    url = f'{WEBHOOK_URL}/webhook'
+    result = await api_call('setWebhook', {
+        'url': url,
+        'drop_pending_updates': False,
+        'max_connections': 100,
+    })
+    if result is not None:
+        print(f'✅ Webhook مسجّل بنجاح: {url}')
+        return True
+    else:
+        print(f'❌ فشل تسجيل الـ Webhook: {url}')
+        return False
+
+async def webhook_watchdog():
+    while True:
+        await asyncio.sleep(600)
+        try:
+            info = await api_call('getWebhookInfo', {})
+            url = (info or {}).get('url', '')
+            pending = (info or {}).get('pending_update_count', 0)
+            last_err = (info or {}).get('last_error_message', '')
+            if not url or (WEBHOOK_URL and not url.startswith(WEBHOOK_URL)):
+                print(f'🔄 الـ Webhook غير مسجل، يتم التسجيل...')
+                await register_webhook()
+            elif last_err:
+                print(f'⚠️ آخر خطأ في الـ Webhook: {last_err} | تحديثات معلّقة: {pending}')
+                await register_webhook()
+            else:
+                print(f'✅ Webhook يعمل | تحديثات معلّقة: {pending}')
+        except Exception as e:
+            print(f'Webhook watchdog error: {e}')
+
 async def webhook_handler(request):
     if request.method == 'POST' and request.path == '/webhook':
         try:
@@ -3865,6 +3902,8 @@ async def webhook_handler(request):
                 asyncio.create_task(handle_update(body))
         except Exception as e:
             print(f'Webhook error: {e}')
+        return web.Response(text='OK', status=200)
+    if request.path == '/health':
         return web.Response(text='OK', status=200)
     return web.Response(text='Romeo Bot is running 🌹', status=200)
 
@@ -3883,6 +3922,9 @@ async def main():
     print(f'Romeo Bot running on port {PORT}')
     asyncio.create_task(auto_clean_loop())
     asyncio.create_task(_db_flush_loop())
+    await asyncio.sleep(2)
+    await register_webhook()
+    asyncio.create_task(webhook_watchdog())
     await asyncio.Event().wait()
 
 if __name__ == '__main__':
