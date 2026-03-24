@@ -27,6 +27,13 @@ _session = None
 _session_created_at = 0
 SESSION_MAX_AGE = 600  # تجديد الجلسة كل 10 دقائق
 
+# ===== Circuit Breaker للـ API =====
+# إذا حصل خطأ اتصال، يُعلّم لمدة قصيرة فيكون كل الاستدعاءات اللاحقة ترجع None فوراً
+# بدل ما كل استدعاء ينتظر 1+2 ثانية على حدة
+_cb_open = False        # True = الدائرة مفتوحة (API متعطل مؤقتاً)
+_cb_open_until = 0.0   # الوقت اللي ترجع فيه للمحاولة
+_CB_TIMEOUT = 4.0      # ثواني قبل المحاولة مجدداً بعد أول خطأ
+
 async def get_session():
     global _session, _session_created_at
     now = time.time()
@@ -41,12 +48,12 @@ async def get_session():
             limit=200,
             limit_per_host=50,
             ttl_dns_cache=600,
-            keepalive_timeout=60,
+            keepalive_timeout=30,
             enable_cleanup_closed=True,
         )
         _session = aiohttp.ClientSession(
             connector=connector,
-            timeout=aiohttp.ClientTimeout(total=20),
+            timeout=aiohttp.ClientTimeout(total=10, connect=3, sock_connect=3, sock_read=8),
         )
         _session_created_at = now
         print(f'✅ تم إنشاء جلسة HTTP جديدة')
@@ -65,6 +72,8 @@ repeat_warn_tracker = {}
 
 # تتبع الطرد السريع (التفليش): {chat_id: {user_id: [timestamps]}}
 flash_tracker = {}
+# تتبع تحذيرات الكلمات المحظورة: {chat_id: {user_id: count}}
+bw_warn_tracker = {}
 # المحظورون مؤقتاً من الطرد: {chat_id: {user_id: unblock_timestamp}}
 flash_blocked = {}
 
@@ -306,6 +315,9 @@ def get_settings(data, chat_id):
         'lock_all_usernames': False,
         'lock_contacts': False,
         'banned_words': [],
+        'bw_warn_mode': False,
+        'bw_restrict_mode': False,
+        'bw_warn_max': 5,
         'lock_flash': False,
         'flash_ban_limit': 3,
         'flash_ban_seconds': 30,
@@ -485,7 +497,17 @@ def get_ahkam_state(data, chat_id):
 # ===========================
 
 async def api_call(method, params):
-    for attempt in range(3):
+    global _session, _cb_open, _cb_open_until
+    now = time.time()
+
+    # ===== Circuit Breaker: إذا الدائرة مفتوحة، ارجع None فوراً =====
+    if _cb_open:
+        if now < _cb_open_until:
+            return None  # لا تضيّع وقت بالانتظار، الاتصال مقطوع
+        else:
+            _cb_open = False  # انتهت فترة الراحة، جرّب مجدداً
+
+    for attempt in range(2):  # محاولتان بدل 3 — فرق الوقت كبير
         try:
             session = await get_session()
             async with session.post(f'{API}/{method}', json=params) as res:
@@ -494,19 +516,24 @@ async def api_call(method, params):
                     return data['result']
                 else:
                     err = data.get('description', '')
-                    if 'Too Many Requests' not in err:
-                        pass
+                    if 'Too Many Requests' in err:
+                        retry_after = data.get('parameters', {}).get('retry_after', 2)
+                        await asyncio.sleep(min(retry_after, 5))
                     return None
         except asyncio.TimeoutError:
-            print(f'⏱ Timeout في {method} (محاولة {attempt+1}/3)')
-            if attempt < 2:
-                await asyncio.sleep(2 ** attempt)
-        except aiohttp.ClientConnectionError as e:
-            print(f'🔌 خطأ اتصال في {method}: {e} (محاولة {attempt+1}/3)')
-            global _session
+            print(f'⏱ Timeout في {method} (محاولة {attempt+1}/2)')
+            _cb_open = True
+            _cb_open_until = time.time() + _CB_TIMEOUT
             _session = None
-            if attempt < 2:
-                await asyncio.sleep(2 ** attempt)
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+        except aiohttp.ClientConnectionError as e:
+            print(f'🔌 خطأ اتصال في {method}: {e} (محاولة {attempt+1}/2)')
+            _cb_open = True
+            _cb_open_until = time.time() + _CB_TIMEOUT
+            _session = None
+            if attempt == 0:
+                await asyncio.sleep(0.5)
         except Exception as e:
             print(f'❌ خطأ في {method}: {type(e).__name__}: {e}')
             return None
@@ -1176,6 +1203,82 @@ async def handle_callback(cb):
 
     if data_cb in menu_texts:
         await edit_msg(chat_id, msg_id, menu_texts[data_cb])
+        return
+
+    if data_cb.startswith('menu_banned_words:'):
+        grp_id = int(data_cb.split(':', 1)[1])
+        data = load_data()
+        if not await is_admin_up(data, grp_id, user_id):
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '⛔ هذا الأمر للمشرفين فقط', 'show_alert': True})
+            return
+        settings = get_settings(data, grp_id)
+        bw_list = settings.get('banned_words', [])
+        count = len(bw_list)
+        warn_on = settings.get('bw_warn_mode', False)
+        restrict_on = settings.get('bw_restrict_mode', False)
+        mode_txt = '🔕 بدون إجراء' if not warn_on and not restrict_on else ('⚠️ تحذير ثم تقييد' if warn_on else '🔒 تقييد مباشر')
+        bw_keyboard = {
+            'inline_keyboard': [
+                [
+                    {'text': '➕ اضافة كلمة', 'callback_data': f'bw_add:{grp_id}'},
+                    {'text': '➖ ازالة كلمة', 'callback_data': f'bw_remove:{grp_id}'},
+                ],
+                [
+                    {'text': f'📋 قائمة الكلمات ({count})', 'callback_data': f'bw_list:{grp_id}'},
+                ],
+                [
+                    {'text': f'⚠️ بالتحذير {"✓" if warn_on else "✗"}', 'callback_data': f'bw_toggle_warn:{grp_id}'},
+                    {'text': f'🔒 بالتقييد {"✓" if restrict_on else "✗"}', 'callback_data': f'bw_toggle_restrict:{grp_id}'},
+                ],
+            ]
+        }
+        await edit_msg(chat_id, msg_id,
+            f'🚫 <b>الكلمات المحظورة</b>\n\nعدد الكلمات المحظورة حالياً: <b>{count}</b>\nالوضع الحالي: <b>{mode_txt}</b>\n\nاختر من الأزرار أدناه:',
+            bw_keyboard)
+        return
+
+    if data_cb.startswith('bw_toggle_warn:') or data_cb.startswith('bw_toggle_restrict:'):
+        action, grp_id_str = data_cb.split(':', 1)
+        grp_id = int(grp_id_str)
+        data = load_data()
+        if not await is_admin_up(data, grp_id, user_id):
+            await api_call('answerCallbackQuery', {'callback_query_id': cb['id'], 'text': '⛔ هذا الأمر للمشرفين فقط', 'show_alert': True})
+            return
+        settings = get_settings(data, grp_id)
+        if action == 'bw_toggle_warn':
+            new_val = not settings.get('bw_warn_mode', False)
+            settings['bw_warn_mode'] = new_val
+            if new_val:
+                settings['bw_restrict_mode'] = False  # لا يمكن تفعيل الاثنين معاً
+        else:
+            new_val = not settings.get('bw_restrict_mode', False)
+            settings['bw_restrict_mode'] = new_val
+            if new_val:
+                settings['bw_warn_mode'] = False  # لا يمكن تفعيل الاثنين معاً
+        save_data(data)
+        warn_on = settings.get('bw_warn_mode', False)
+        restrict_on = settings.get('bw_restrict_mode', False)
+        bw_list = settings.get('banned_words', [])
+        count = len(bw_list)
+        mode_txt = '🔕 بدون إجراء' if not warn_on and not restrict_on else ('⚠️ تحذير ثم تقييد' if warn_on else '🔒 تقييد مباشر')
+        bw_keyboard = {
+            'inline_keyboard': [
+                [
+                    {'text': '➕ اضافة كلمة', 'callback_data': f'bw_add:{grp_id}'},
+                    {'text': '➖ ازالة كلمة', 'callback_data': f'bw_remove:{grp_id}'},
+                ],
+                [
+                    {'text': f'📋 قائمة الكلمات ({count})', 'callback_data': f'bw_list:{grp_id}'},
+                ],
+                [
+                    {'text': f'⚠️ بالتحذير {"✓" if warn_on else "✗"}', 'callback_data': f'bw_toggle_warn:{grp_id}'},
+                    {'text': f'🔒 بالتقييد {"✓" if restrict_on else "✗"}', 'callback_data': f'bw_toggle_restrict:{grp_id}'},
+                ],
+            ]
+        }
+        await edit_msg(chat_id, msg_id,
+            f'🚫 <b>الكلمات المحظورة</b>\n\nعدد الكلمات المحظورة حالياً: <b>{count}</b>\nالوضع الحالي: <b>{mode_txt}</b>\n\nاختر من الأزرار أدناه:',
+            bw_keyboard)
         return
 
     if data_cb.startswith('bw_add:') or data_cb.startswith('bw_remove:') or data_cb.startswith('bw_list:'):
@@ -2061,7 +2164,7 @@ async def media_mod(msg, data, settings):
         await delete(chat_id, msg_id)
         return
 
-    if settings.get('lock_quote') and msg.get('quote'):
+    if settings.get('lock_quote') and _is_quote_message(msg):
         await delete(chat_id, msg_id)
         return
 
@@ -2364,6 +2467,53 @@ async def media_mod(msg, data, settings):
 # CONTENT MODERATION
 # ===========================
 
+def _is_quote_message(msg):
+    """
+    يرصد جميع أشكال الاقتباس:
+    1. اقتباس Telegram الحقيقي (quote field)
+    2. اقتباس مزيف بعلامات خاصة مثل: " ها اين انت
+    """
+    # الاقتباس الحقيقي من Telegram
+    if msg.get('quote'):
+        return True
+    # الاقتباس المزيف: النص يبدأ بعلامة اقتباس خاصة
+    text = (msg.get('text') or msg.get('caption') or '').lstrip()
+    FAKE_QUOTE_CHARS = (
+        '\u201c',  # " LEFT DOUBLE QUOTATION MARK
+        '\u201d',  # " RIGHT DOUBLE QUOTATION MARK
+        '\u275d',  # ❝ HEAVY DOUBLE TURNED COMMA QUOTATION MARK
+        '\u275e',  # ❞ HEAVY DOUBLE COMMA QUOTATION MARK
+        '\u00bb',  # » RIGHT-POINTING DOUBLE ANGLE QUOTATION
+        '\u00ab',  # « LEFT-POINTING DOUBLE ANGLE QUOTATION
+        '\u2018',  # ' LEFT SINGLE QUOTATION MARK
+        '\u2019',  # ' RIGHT SINGLE QUOTATION MARK
+        '\u276e',  # ❮
+        '\u276f',  # ❯
+        '|',       # | شرطة عمودية تُستخدم أحياناً لتقليد الاقتباس
+    )
+    if text.startswith(FAKE_QUOTE_CHARS):
+        return True
+    return False
+
+def _has_phone_number(text):
+    """
+    يرصد أرقام الهواتف بجميع الأشكال:
+    - 07758483023
+    - +9647758483023
+    - +964 775 848 3023
+    - 775 848 3023
+    - 0775-848-3023
+    """
+    # الشكل الكلاسيكي: أرقام متصلة 9-13 رقم
+    if re.search(r'(?<!\d)\+?\d{9,13}(?!\d)', text):
+        return True
+    # الشكل مع مسافات أو شرطات بين المجموعات
+    for match in re.finditer(r'\+?(?:\d[ \-]?){8,15}\d', text):
+        digits_only = re.sub(r'[^\d]', '', match.group())
+        if 9 <= len(digits_only) <= 14:
+            return True
+    return False
+
 async def content_mod(msg, data, settings):
     chat_id = msg['chat']['id']
     msg_id = msg['message_id']
@@ -2382,7 +2532,7 @@ async def content_mod(msg, data, settings):
         await delete(chat_id, msg_id)
         return True
 
-    if settings.get('lock_quote') and msg.get('quote'):
+    if settings.get('lock_quote') and _is_quote_message(msg):
         await delete(chat_id, msg_id)
         return True
 
@@ -2404,7 +2554,7 @@ async def content_mod(msg, data, settings):
         await delete(chat_id, msg_id)
         return True
 
-    if settings['lock_numbers'] and re.search(r'(?<!\d)\+?\d{9,12}(?!\d)', text):
+    if settings['lock_numbers'] and _has_phone_number(text):
         await delete(chat_id, msg_id)
         return True
 
@@ -2445,6 +2595,48 @@ async def content_mod(msg, data, settings):
         for bw in bw_list:
             if bw in text_lower:
                 await delete(chat_id, msg_id)
+                if settings.get('bw_restrict_mode'):
+                    # تقييد مباشر عند استخدام كلمة محظورة
+                    await restrict(chat_id, user_id, {
+                        'can_send_messages': False,
+                        'can_send_audios': False,
+                        'can_send_documents': False,
+                        'can_send_photos': False,
+                        'can_send_videos': False,
+                        'can_send_video_notes': False,
+                        'can_send_voice_notes': False,
+                        'can_send_polls': False,
+                        'can_send_other_messages': False,
+                    })
+                    await send(chat_id, f'🚫 {mention(from_)} تم تقييده بسبب استخدام كلمة محظورة', reply)
+                elif settings.get('bw_warn_mode'):
+                    # تحذير وتقييد بعد 5 تحذيرات
+                    cid_key = str(chat_id)
+                    uid_key = str(user_id)
+                    warn_max = settings.get('bw_warn_max', 5)
+                    if cid_key not in bw_warn_tracker:
+                        bw_warn_tracker[cid_key] = {}
+                    bw_warn_tracker[cid_key][uid_key] = bw_warn_tracker[cid_key].get(uid_key, 0) + 1
+                    warns = bw_warn_tracker[cid_key][uid_key]
+                    if warns >= warn_max:
+                        bw_warn_tracker[cid_key][uid_key] = 0
+                        await restrict(chat_id, user_id, {
+                            'can_send_messages': False,
+                            'can_send_audios': False,
+                            'can_send_documents': False,
+                            'can_send_photos': False,
+                            'can_send_videos': False,
+                            'can_send_video_notes': False,
+                            'can_send_voice_notes': False,
+                            'can_send_polls': False,
+                            'can_send_other_messages': False,
+                        })
+                        await send(chat_id, f'🚫 {mention(from_)} تم تقييده بعد تجاوز {warn_max} تحذيرات بسبب الكلمات المحظورة', reply)
+                    else:
+                        remaining = warn_max - warns
+                        await send(chat_id,
+                            f'⚠️ {mention(from_)} | تحذير <b>{warns}/{warn_max}</b> بسبب كلمة محظورة\n'
+                            f'متبقي <b>{remaining}</b> تحذير قبل التقييد', reply)
                 return True
 
     if settings['lock_repeat']:
@@ -2601,16 +2793,18 @@ async def process_cmd(msg, data, state, text, settings):
         'الغاء الكتم', 'الغاء التقييد', 'طرد', 'مسح', 'قفل امر', 'اضف امر', 'الاوامر', 'اوامر',
         'الكلمات المحظورة']
     is_admin_cmd = text in ADMIN_CMD_EXACT or any(text.startswith(p) for p in ADMIN_CMD_PREFIXES)
-    if is_member_only and is_admin_cmd:
-        await send(chat_id, '• عذراً الامر يخص ‹ ادمن › فقط .', reply)
-        return
 
+    # نفحص الأوامر المقفولة أولاً لأنها تأخذ الأولوية
     locked_cmds = settings.get('locked_commands', {})
     if text in locked_cmds:
         required_rank = locked_cmds[text]
         if rank_level(user_rank) < rank_level(required_rank) and not tg_admin and not dev:
             await send(chat_id, f'• عذراً الامر يخص ‹ {required_rank} › فقط .', reply)
             return
+
+    if is_member_only and is_admin_cmd:
+        await send(chat_id, '• عذراً الامر يخص ‹ ادمن › فقط .', reply)
+        return
 
     # رتبتي / رتبته - مسموح للجميع بمن فيهم الأعضاء
     if not settings['disable_service']:
@@ -2673,6 +2867,9 @@ async def process_cmd(msg, data, state, text, settings):
             return
         bw_list = settings.get('banned_words', [])
         count = len(bw_list)
+        warn_on = settings.get('bw_warn_mode', False)
+        restrict_on = settings.get('bw_restrict_mode', False)
+        mode_txt = '🔕 بدون إجراء' if not warn_on and not restrict_on else ('⚠️ تحذير ثم تقييد' if warn_on else '🔒 تقييد مباشر')
         bw_keyboard = {
             'inline_keyboard': [
                 [
@@ -2682,10 +2879,14 @@ async def process_cmd(msg, data, state, text, settings):
                 [
                     {'text': f'📋 قائمة الكلمات ({count})', 'callback_data': f'bw_list:{chat_id}'},
                 ],
+                [
+                    {'text': f'⚠️ بالتحذير {"✓" if warn_on else "✗"}', 'callback_data': f'bw_toggle_warn:{chat_id}'},
+                    {'text': f'🔒 بالتقييد {"✓" if restrict_on else "✗"}', 'callback_data': f'bw_toggle_restrict:{chat_id}'},
+                ],
             ]
         }
         await send(chat_id,
-            f'🚫 <b>الكلمات المحظورة</b>\n\nعدد الكلمات المحظورة حالياً: <b>{count}</b>\nاختر من الأزرار أدناه:',
+            f'🚫 <b>الكلمات المحظورة</b>\n\nعدد الكلمات المحظورة حالياً: <b>{count}</b>\nالوضع الحالي: <b>{mode_txt}</b>\n\nاختر من الأزرار أدناه:',
             {'reply_markup': bw_keyboard, 'reply_to_message_id': msg_id})
         return
 
@@ -2911,7 +3112,7 @@ async def process_cmd(msg, data, state, text, settings):
     # قائمة الأوامر
     # ===========================
     if text in ['الاوامر', 'اوامر'] and await is_admin_up(data, chat_id, user_id):
-        await send(chat_id, '🤖 <b>قائمة الأوامر</b>\n\n- أوامر ① الخدمية\n- أوامر ② التسليه\n- أوامر ③ القفل والفتح\n- أوامر ④ الإعدادات\n- أوامر ⑤ الألعاب', {
+        await send(chat_id, '🤖 <b>قائمة الأوامر</b>\n\n- أوامر ① الخدمية\n- أوامر ② التسليه\n- أوامر ③ القفل والفتح\n- أوامر ④ الإعدادات\n- أوامر ⑤ الألعاب\n- أوامر ⑥ الكلمات المحظورة', {
             'reply_markup': {'inline_keyboard': [
                 [
                     {'text': '① خدمية', 'callback_data': 'menu_service'},
@@ -2923,6 +3124,7 @@ async def process_cmd(msg, data, state, text, settings):
                 ],
                 [
                     {'text': '⑤ الألعاب', 'callback_data': 'menu_games'},
+                    {'text': '⑥ كلمات محظورة', 'callback_data': f'menu_banned_words:{chat_id}'},
                 ]
             ]},
             'reply_to_message_id': msg_id
@@ -3930,11 +4132,11 @@ async def webhook_watchdog():
             print(f'Webhook watchdog error: {e}')
 
 async def keep_alive_loop():
-    """يحيّي الخادم كل دقيقتين لمنع النوم وإبقاء الاتصالات نشطة"""
-    await asyncio.sleep(20)  # انتظر بداية الخادم
+    """يحيّي الخادم كل دقيقة ويُعيد فتح الـ circuit breaker عند نجاح الاتصال"""
+    global _cb_open, _cb_open_until, _session
+    await asyncio.sleep(20)
     while True:
         try:
-            # ping نفسه عبر HTTP للحفاظ على نشاط Replit
             try:
                 s = await get_session()
                 async with s.get(
@@ -3944,12 +4146,25 @@ async def keep_alive_loop():
                     pass
             except:
                 pass
-            # ping تليغرام للحفاظ على الاتصال
-            await api_call('getMe', {})
-            print(f'💓 Keepalive OK - {datetime.now().strftime("%H:%M:%S")}')
+            # جرّب تليغرام مباشرة (بتجاوز circuit breaker)
+            try:
+                sess = await get_session()
+                async with sess.post(f'{API}/getMe', json={},
+                    timeout=aiohttp.ClientTimeout(total=6)) as res:
+                    d = await res.json()
+                    if d.get('ok'):
+                        if _cb_open:
+                            _cb_open = False
+                            print(f'✅ الاتصال عاد — Circuit Breaker مُغلق')
+                        print(f'💓 Keepalive OK - {datetime.now().strftime("%H:%M:%S")}')
+            except Exception as e2:
+                print(f'💔 Keepalive ping فشل: {e2}')
+                _cb_open = True
+                _cb_open_until = time.time() + _CB_TIMEOUT
+                _session = None
         except Exception as e:
             print(f'Keepalive error: {e}')
-        await asyncio.sleep(120)  # كل دقيقتين
+        await asyncio.sleep(60)  # كل دقيقة بدل دقيقتين
 
 async def webhook_handler(request):
     if request.method == 'POST' and request.path == '/webhook':
