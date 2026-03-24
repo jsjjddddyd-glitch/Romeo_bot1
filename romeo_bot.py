@@ -411,26 +411,83 @@ JOBS = {
 }
 
 ITEM_PRICES = {
-    'سيارة': 5000, 'سيارات': 5000,
-    'طيارة': 50000, 'طيارات': 50000,
-    'قصر': 100000, 'قصور': 100000,
-    'بيت': 20000, 'بيوت': 20000,
-    'جندي': 3000, 'جنود': 3000,
-    'فيل': 30000, 'فيله': 30000,
-    'برج': 80000, 'ابراج': 80000,
-    'دبابة': 40000, 'دبابات': 40000,
+    'برج': 145000000, 'جزيرة': 130000000, 'بيت': 80000000,
+    'طيارة': 12000000, 'سيارة': 8000000, 'سفينة': 1400000,
+    'قطار': 1300000, 'قصر': 1000000, 'ماسة': 800000, 'وجبة': 20,
+    'جندي': 468363, 'رشاش': 6398990, 'قنبلة': 187118491,
+    'صاروخ': 7873543170, 'مدفع': 35500875115, 'مدرعة': 837216638774,
+    'مضاد صواريخ': 1826756987720, 'طائرة حربية': 81606720,
 }
 
 ITEM_EMOJI = {
-    'سيارة': '🚗', 'طيارة': '✈️', 'قصر': '🏰', 'بيت': '🏠',
-    'جندي': '💂', 'فيل': '🐘', 'برج': '🏙️', 'دبابة': '🪖'
+    'برج': '🏰', 'جزيرة': '🏝️', 'بيت': '🏠', 'طيارة': '✈️',
+    'سيارة': '🚗', 'سفينة': '🛳️', 'قطار': '🚂', 'قصر': '🏯',
+    'ماسة': '💎', 'وجبة': '🍔', 'جندي': '💂', 'رشاش': '🔫',
+    'قنبلة': '💣', 'صاروخ': '🚀', 'مدفع': '🏹', 'مدرعة': '🪖',
+    'مضاد صواريخ': '🛡️', 'طائرة حربية': '🛩️',
 }
 
 ITEM_SINGULAR = {
-    'سيارات': 'سيارة', 'طيارات': 'طيارة', 'قصور': 'قصر',
-    'بيوت': 'بيت', 'جنود': 'جندي', 'فيله': 'فيل',
-    'ابراج': 'برج', 'دبابات': 'دبابة',
+    'ابراج': 'برج', 'جزر': 'جزيرة', 'بيوت': 'بيت', 'طيارات': 'طيارة',
+    'سيارات': 'سيارة', 'سفن': 'سفينة', 'قطارات': 'قطار', 'قصور': 'قصر',
+    'ماسات': 'ماسة', 'وجبات': 'وجبة', 'جنود': 'جندي', 'رشاشات': 'رشاش',
+    'قنابل': 'قنبلة', 'صواريخ': 'صاروخ', 'مدافع': 'مدفع', 'مدرعات': 'مدرعة',
+    'طائرات': 'طائرة حربية',
 }
+
+KAT_QUESTIONS = [
+    'لو خيروك: تعض لسانك بالغلط، ولا يسكر على صبعك الباب؟',
+    'انسان م تحب تتعامل معه ابد 🤨',
+    'ما أهدافك المستقبلية؟ 🎯',
+    'ردك الدائم على الكلام الحلو... 🌹',
+    'وش الشيء الي يكرهه أقرب صاحب لك؟',
+    'أكثر ريحة تجيب راسك... 🤢',
+    'لو قدرت تغير شي في حياتك وش راح تغير؟',
+    'وش أكثر شي يضحكك لو فكرت فيه؟ 😂',
+    'أكثر شخص أثر فيك في حياتك ومن؟',
+    'لو عندك يوم بدون أي مسؤوليات وش راح تسوي؟',
+    'وش الشي اللي لو عرفه الناس عنك راح يتفاجأون؟ 😯',
+    'شي تتمنى لو ما سويته؟',
+    'لو قدرت تسافر لأي مكان بالعالم وين راح تروح؟ ✈️',
+    'أكثر شي تخاف منه في المستقبل؟',
+    'وش أكثر تطبيق تفتحه على جوالك؟',
+    'لو طلب منك أحد تصف نفسك بثلاث كلمات وش راح تقول؟',
+    'شي تتمناه الحين بس تعرف انه مستحيل؟',
+    'أكثر قرار صعب اتخذته في حياتك؟',
+    'لو عندك قدرة خارقة وش تختار؟ ⚡',
+    'وش أكثر شي تكرهه في البشر؟',
+    'صاحبك الوفي وش صفاته عندك؟',
+    'أكثر لحظة فرحان فيها في حياتك؟ 🎉',
+    'لو الدنيا بكره وش راح تسوي اليوم؟',
+    'وش الأكل اللي لو شفته تقوم من الطاولة؟ 🤮',
+    'أكثر جملة تسمعها وتنرفز؟ 😤',
+    'لو قدرت ترجع بالوقت لمتى راح ترجع؟',
+    'شي تعلمته من تجربة مرت عليك؟',
+    'وش تحس فيه لما تكون لحالك؟',
+    'أكثر شي تقدر تصبر عليه وأكثر شي ما تقدر؟',
+    'لو صاحبك خانك وش راح تسوي؟',
+    'وش الأغنية اللي تعبر عن حياتك الحين؟ 🎵',
+    'لو كان عندك مليون دينار وش أول شي تشتريه؟ 💰',
+    'شي تتمناه لأقرب شخص لك؟ ❤️',
+    'أكثر شي تندم عليه في علاقاتك مع الناس؟',
+    'وش تحب الناس تتذكرك فيه بعد ما تروح؟',
+    'لو قدرت تعيش في أي زمن وين كنت تختار؟',
+    'أكثر إنجاز تفخر فيه لحد الحين؟ 🏆',
+    'وش الحلم اللي تكرر معك وما نسيته؟',
+    'لو عندك رسالة لنفسك قبل 5 سنين وش كنت تقوله؟',
+]
+
+REGULAR_SHOP_ITEMS = [
+    ('برج', '🏰', 145000000), ('جزيرة', '🏝️', 130000000), ('بيت', '🏠', 80000000),
+    ('طيارة', '✈️', 12000000), ('سيارة', '🚗', 8000000), ('سفينة', '🛳️', 1400000),
+    ('قطار', '🚂', 1300000), ('قصر', '🏯', 1000000), ('ماسة', '💎', 800000), ('وجبة', '🍔', 20),
+]
+
+MILITARY_SHOP_ITEMS = [
+    ('جندي', '💂', 468363), ('رشاش', '🔫', 6398990), ('طائرة حربية', '🛩️', 81606720),
+    ('قنبلة', '💣', 187118491), ('صاروخ', '🚀', 7873543170), ('مدفع', '🏹', 35500875115),
+    ('مدرعة', '🪖', 837216638774), ('مضاد صواريخ', '🛡️', 1826756987720),
+]
 
 def normalize_item(item_name):
     item_name = item_name.strip()
@@ -439,6 +496,9 @@ def normalize_item(item_name):
     if item_name in ITEM_PRICES:
         return item_name
     return None
+
+def fmt_money(n):
+    return f'<code>{n}</code>'
 
 def get_bank(data, chat_id, user_id):
     cid = str(chat_id)
@@ -1153,6 +1213,8 @@ menu_texts = {
     ),
     'menu_games': (
         '🎮 <b>أوامر الألعاب:</b>\n\n'
+        '<b>🐱 لعبة كت:</b>\n'
+        '• اكتب <b>كت</b> ويسألك البوت سؤال عشوائي\n\n'
         '<b>🪑 لعبة الكرسي:</b>\n'
         '• اكتب <b>كرسي</b> لبدء اللعبة وتسجيل نفسك\n'
         '• الأعضاء يرسلون <b>انا</b> للانضمام\n'
@@ -1169,9 +1231,13 @@ menu_texts = {
         '• <b>فلوسي</b> - عرض رصيدك\n'
         '• <b>فلوسه</b> (رد) - عرض رصيد شخص آخر\n'
         '• <b>راتب</b> - استلام راتبك (كل 7 ساعات)\n'
-        '• <b>زرف</b> (رد) - سرقة فلوس من شخص (كل 4 ساعات)\n'
+        '• <b>زرف</b> (رد) - سرقة فلوس (كل 4 ساعات)\n'
         '• <b>حظ [مبلغ]</b> - المقامرة بمبلغ\n'
+        '• <b>استثمار [مبلغ]</b> - استثمار بربح 4-9% (كل 3 ساعات)\n'
+        '• <b>المتجر</b> - عرض المتجر وأسعار الأشياء\n'
         '• <b>شراء [عدد] [اسم الشيء]</b> - شراء ممتلكات\n'
+        '• <b>بيع [عدد] [اسم الشيء]</b> - بيع ممتلكات (60% من السعر)\n'
+        '• <b>اهداء [عدد] [اسم الشيء]</b> (رد) - إهداء ممتلكات لشخص\n'
         '• <b>ممتلكاتي</b> - عرض ممتلكاتك\n'
         '• <b>تحويل [مبلغ] [رقم الحساب]</b> - تحويل فلوس لشخص آخر\n\n'
         '🔴 تعطيل الالعاب | تفعيل الالعاب'
@@ -1401,6 +1467,37 @@ async def handle_callback(cb):
             f'💳 رقم الحساب: <code>{acc["account_number"]}</code>\n\n'
             f'<i>(للعلم هذه العمليات لعبة وليست حقيقية)</i>'
         )
+        return
+
+    if data_cb == 'shop_regular':
+        lines = ['🏪 <b>المتجر العادي</b>\n\nأهلاً بك عزيزي في قسم المتجر وتفاصيله :\n']
+        for i, (item, emoji, price) in enumerate(REGULAR_SHOP_ITEMS, 1):
+            lines.append(f'{i} - {item} {emoji} ← <code>{price}</code> دينار')
+        lines.append('\n- تستطيع الشراء بذلك المثال : شراء 2 سيارة')
+        lines.append('- تستطيع البيع بذلك المثال : بيع 2 سيارة')
+        lines.append('- تستطيع الاهداء بذلك المثال : اهداء 2 سيارة (بالرد)')
+        lines.append('\n<i>ملاحظة: البيع يكون بـ 60% من السعر الأصلي</i>')
+        back_kb = {'inline_keyboard': [[{'text': '🔙 رجوع', 'callback_data': 'shop_back'}]]}
+        await edit_msg(chat_id, msg_id, '\n'.join(lines), back_kb)
+        return
+
+    if data_cb == 'shop_military':
+        lines = ['⚔️ <b>المتجر العالمي</b>\n\nأهلاً بك عزيزي في أسعار المتجر العالمي وتفاصيله :\n']
+        for i, (item, emoji, price) in enumerate(MILITARY_SHOP_ITEMS, 1):
+            lines.append(f'{i} - {item} {emoji} ← <code>{price}</code> دينار')
+        lines.append('\n- تستطيع الشراء بذلك المثال : شراء 2 جندي')
+        lines.append('- تستطيع البيع بذلك المثال : بيع 2 جندي')
+        lines.append('\n<i>ملاحظة: البيع يكون بـ 60% من السعر الأصلي</i>')
+        back_kb = {'inline_keyboard': [[{'text': '🔙 رجوع', 'callback_data': 'shop_back'}]]}
+        await edit_msg(chat_id, msg_id, '\n'.join(lines), back_kb)
+        return
+
+    if data_cb == 'shop_back':
+        keyboard = {'inline_keyboard': [
+            [{'text': '🏪 المتجر العادي', 'callback_data': 'shop_regular'}],
+            [{'text': '⚔️ المتجر العالمي', 'callback_data': 'shop_military'}],
+        ]}
+        await edit_msg(chat_id, msg_id, '🛒 <b>اختر نوع المتجر:</b>', keyboard)
         return
 
     if data_cb.startswith('kursi_ask:'):
@@ -3151,6 +3248,20 @@ async def process_cmd(msg, data, state, text, settings):
         await send(chat_id, '🗑️ أرسل اسم الرد الذي تريد حذفه:', reply)
         return
 
+    if text == 'الردود' and (rank_level(user_rank) >= rank_level('مدير') or tg_admin or dev):
+        custom = data.get('custom_replies', {}).get(cid, {})
+        if not custom:
+            await send(chat_id, '📋 لا توجد ردود مضافة في هذه المجموعة حتى الآن', reply)
+            return
+        names = list(custom.keys())
+        lines = [f'📋 <b>قائمة الردود المضافة ({len(names)}):</b>\n']
+        for i, name in enumerate(names, 1):
+            rtype = custom[name].get('type', 'text')
+            icon = '🖼️' if rtype == 'photo' else ('🎬' if rtype == 'video' else '💬')
+            lines.append(f'{i}. {icon} <code>{name}</code>')
+        lines.append('\n<i>اكتب اسم الرد لتشغيله</i>')
+        await send(chat_id, '\n'.join(lines), reply)
+        return
 
     # ===========================
     # أوامر القفل والإعدادات
@@ -3419,6 +3530,17 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
     now = datetime.now().timestamp()
 
     # ===========================
+    # لعبة كت
+    # ===========================
+    if text == 'كت':
+        question = random.choice(KAT_QUESTIONS)
+        await send(chat_id,
+            f'‹ {m} ›\n{question}',
+            reply
+        )
+        return
+
+    # ===========================
     # لعبة الكرسي
     # ===========================
     if text == 'كرسي':
@@ -3621,7 +3743,7 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
         await send(chat_id,
             f'💳 <b>حسابك البنكي</b>\n\n'
             f'~{acc["account_number"]}\n'
-            f'فلوسك : {acc["balance"]:,} دينار\n'
+            f'فلوسك : {fmt_money(acc["balance"])} دينار\n'
             f'اسم البنك : {acc["bank"]}\n'
             f'الوظيفة : {job_text}',
             reply
@@ -3636,7 +3758,7 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
         if not acc:
             await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
             return
-        await send(chat_id, f'💰 فلوسك ←  {acc["balance"]:,} دينار', reply)
+        await send(chat_id, f'💰 فلوسك ←  {fmt_money(acc["balance"])} دينار', reply)
         return
 
     if text == 'فلوسه':
@@ -3646,7 +3768,7 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
             if not tf_acc:
                 await send(chat_id, f'😕 {mention(tf)} ما عنده حساب بنكي', reply)
             else:
-                await send(chat_id, f'💰 فلوسه ←  {tf_acc["balance"]:,} دينار', reply)
+                await send(chat_id, f'💰 فلوسه ←  {fmt_money(tf_acc["balance"])} دينار', reply)
         else:
             await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة فلوسه', reply)
         return
@@ -3678,8 +3800,8 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
         await send(chat_id,
             f'💰 {m} استلمت راتبك!\n\n'
             f'👷 الوظيفة: <b>{job_name}</b>\n'
-            f'💵 الراتب: <b>{salary:,}</b> دينار\n'
-            f'💳 رصيدك الجديد: <b>{acc["balance"]:,}</b> دينار',
+            f'💵 الراتب: <b>{fmt_money(salary)}</b> دينار\n'
+            f'💳 رصيدك الجديد: <b>{fmt_money(acc["balance"])}</b> دينار',
             reply
         )
         return
@@ -3721,8 +3843,8 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
         save_data(data)
         await send(chat_id,
             f'🦹 تم زرف العضو {mention(tf)}\n'
-            f'💸 المبلغ المسروق: <b>{stolen:,}</b> دينار\n'
-            f'💳 رصيدك الجديد: <b>{stealer_acc["balance"]:,}</b> دينار',
+            f'💸 المبلغ المسروق: <b>{fmt_money(stolen)}</b> دينار\n'
+            f'💳 رصيدك الجديد: <b>{fmt_money(stealer_acc["balance"])}</b> دينار',
             reply
         )
         return
@@ -3741,7 +3863,7 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
             await send(chat_id, '⚠️ المبلغ يجب أن يكون أكبر من صفر', reply)
             return
         if acc.get('balance', 0) < bet:
-            await send(chat_id, f'💸 فلوسك ما تكفي يا فكر\n💳 رصيدك: <b>{acc.get("balance", 0):,}</b> دينار', reply)
+            await send(chat_id, f'💸 فلوسك ما تكفي يا فكر\n💳 رصيدك: <b>{fmt_money(acc.get("balance", 0))}</b> دينار', reply)
             return
         roll = random.random()
         if roll < 0.40:
@@ -3749,8 +3871,8 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
             save_data(data)
             await send(chat_id,
                 f'😢 {m} خسرت!\n\n'
-                f'💸 خسرت: <b>{bet:,}</b> دينار\n'
-                f'💳 رصيدك: <b>{acc["balance"]:,}</b> دينار',
+                f'💸 خسرت: <b>{fmt_money(bet)}</b> دينار\n'
+                f'💳 رصيدك: <b>{fmt_money(acc["balance"])}</b> دينار',
                 reply
             )
         elif roll < 0.95:
@@ -3760,8 +3882,8 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
             save_data(data)
             await send(chat_id,
                 f'🎉 {m} ربحت!\n\n'
-                f'💰 ربحت: <b>{gain:,}</b> دينار ({int(gain_pct*100)}%)\n'
-                f'💳 رصيدك: <b>{acc["balance"]:,}</b> دينار',
+                f'💰 ربحت: <b>{fmt_money(gain)}</b> دينار ({int(gain_pct*100)}%)\n'
+                f'💳 رصيدك: <b>{fmt_money(acc["balance"])}</b> دينار',
                 reply
             )
         else:
@@ -3770,10 +3892,70 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
             save_data(data)
             await send(chat_id,
                 f'🤑 {m} حظك جبار! المبلغ تضاعف 2x!\n\n'
-                f'💰 ربحت: <b>{doubled:,}</b> دينار\n'
-                f'💳 رصيدك: <b>{acc["balance"]:,}</b> دينار',
+                f'💰 ربحت: <b>{fmt_money(doubled)}</b> دينار\n'
+                f'💳 رصيدك: <b>{fmt_money(acc["balance"])}</b> دينار',
                 reply
             )
+        return
+
+    # ===========================
+    # المتجر
+    # ===========================
+    if text == 'المتجر':
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي\nاكتب <b>انشاء حساب بنكي</b> أولاً', reply)
+            return
+        keyboard = {'inline_keyboard': [
+            [{'text': '🏪 المتجر العادي', 'callback_data': 'shop_regular'}],
+            [{'text': '⚔️ المتجر العالمي', 'callback_data': 'shop_military'}],
+        ]}
+        await send(chat_id,
+            f'🛒 <b>مرحباً في المتجر {m}</b>\n\nاختر نوع المتجر:',
+            {'reply_markup': keyboard, 'reply_to_message_id': msg_id}
+        )
+        return
+
+    # ===========================
+    # استثمار
+    # ===========================
+    invest_match = re.match(r'^استثمار\s+(\d+)$', text)
+    if invest_match:
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
+            return
+        amount = int(invest_match.group(1))
+        if amount <= 0:
+            await send(chat_id, '⚠️ المبلغ يجب أن يكون أكبر من صفر', reply)
+            return
+        if acc.get('balance', 0) < amount:
+            await send(chat_id,
+                f'💸 فلوسك ما تكفي\n💳 رصيدك: <b>{fmt_money(acc.get("balance", 0))}</b> دينار', reply)
+            return
+        last_invest = acc.get('last_invest', 0)
+        cooldown = 3 * 3600
+        elapsed = now - last_invest
+        if last_invest > 0 and elapsed < cooldown:
+            remaining = int(cooldown - elapsed)
+            h = remaining // 3600
+            mn = (remaining % 3600) // 60
+            await send(chat_id, f'📈 {m} استثمرت مؤخراً، ارجع بعد قليل\n⏰ المتبقي: {h} ساعة و {mn} دقيقة', reply)
+            return
+        profit_pct = random.randint(4, 9) / 100
+        profit = int(amount * profit_pct)
+        acc['balance'] = acc.get('balance', 0) + profit
+        acc['last_invest'] = now
+        save_data(data)
+        await send(chat_id,
+            f'📈 <b>تمت عملية الاستثمار</b>\n\n'
+            f'💰 المبلغ المستثمر: <b>{fmt_money(amount)}</b> دينار\n'
+            f'📊 نسبة الربح: <b>{int(profit_pct * 100)}%</b>\n'
+            f'✅ الربح: <b>{fmt_money(profit)}</b> دينار\n'
+            f'💳 رصيدك الجديد: <b>{fmt_money(acc["balance"])}</b> دينار\n\n'
+            f'⏰ الاستثمار القادم بعد 3 ساعات',
+            reply
+        )
         return
 
     # ===========================
@@ -3789,11 +3971,9 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
         item_raw = buy_match.group(2).strip()
         item_key = normalize_item(item_raw)
         if not item_key or item_key not in ITEM_PRICES:
-            items_list = '، '.join(set(ITEM_PRICES.keys()) - set(ITEM_SINGULAR.values()))
             await send(chat_id,
                 f'⚠️ اسم الشيء غير صحيح\n\n'
-                f'الأشياء المتاحة:\n'
-                f'سيارة | طيارة | قصر | بيت | جندي | فيل | برج | دبابة',
+                f'اكتب <b>المتجر</b> لعرض الأشياء المتاحة وأسعارها',
                 reply
             )
             return
@@ -3801,8 +3981,8 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
         if acc.get('balance', 0) < price:
             await send(chat_id,
                 f'💸 فلوسك ما تكفي يا فكر\n'
-                f'💳 رصيدك: <b>{acc.get("balance", 0):,}</b> دينار\n'
-                f'💰 السعر: <b>{price:,}</b> دينار',
+                f'💳 رصيدك: <b>{fmt_money(acc.get("balance", 0))}</b> دينار\n'
+                f'💰 السعر: <b>{fmt_money(price)}</b> دينار',
                 reply
             )
             return
@@ -3814,8 +3994,94 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
         emoji = ITEM_EMOJI.get(item_key, '🏷️')
         await send(chat_id,
             f'✅ {m} اشتريت <b>{qty} {item_key}</b> {emoji}\n\n'
-            f'💸 دفعت: <b>{price:,}</b> دينار\n'
-            f'💳 رصيدك الجديد: <b>{acc["balance"]:,}</b> دينار',
+            f'💸 دفعت: <b>{fmt_money(price)}</b> دينار\n'
+            f'💳 رصيدك الجديد: <b>{fmt_money(acc["balance"])}</b> دينار',
+            reply
+        )
+        return
+
+    # ===========================
+    # البيع
+    # ===========================
+    sell_match = re.match(r'^بيع\s+(\d+)\s+(.+)$', text)
+    if sell_match:
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
+            return
+        qty = int(sell_match.group(1))
+        item_raw = sell_match.group(2).strip()
+        item_key = normalize_item(item_raw)
+        if not item_key or item_key not in ITEM_PRICES:
+            await send(chat_id, f'⚠️ اسم الشيء غير صحيح\nاكتب <b>المتجر</b> لعرض الأشياء المتاحة', reply)
+            return
+        props = acc.get('properties', {})
+        owned = props.get(item_key, 0)
+        if owned < qty:
+            await send(chat_id,
+                f'⚠️ ما عندك كمية كافية\n'
+                f'عندك: <b>{owned} {item_key}</b> {ITEM_EMOJI.get(item_key, "")}',
+                reply
+            )
+            return
+        sell_price = int(ITEM_PRICES[item_key] * qty * 0.60)
+        props[item_key] = owned - qty
+        if props[item_key] == 0:
+            del props[item_key]
+        acc['balance'] = acc.get('balance', 0) + sell_price
+        save_data(data)
+        emoji = ITEM_EMOJI.get(item_key, '🏷️')
+        await send(chat_id,
+            f'💰 {m} بعت <b>{qty} {item_key}</b> {emoji}\n\n'
+            f'💵 استلمت: <b>{fmt_money(sell_price)}</b> دينار\n'
+            f'📉 (60% من السعر الأصلي)\n'
+            f'💳 رصيدك الجديد: <b>{fmt_money(acc["balance"])}</b> دينار',
+            reply
+        )
+        return
+
+    # ===========================
+    # الإهداء
+    # ===========================
+    gift_match = re.match(r'^اهداء\s+(\d+)\s+(.+)$', text)
+    if gift_match and msg.get('reply_to_message'):
+        tf = msg['reply_to_message']['from']
+        if tf['id'] == user_id:
+            await send(chat_id, '⚠️ ما تقدر تهدي نفسك', reply)
+            return
+        acc = get_bank(data, chat_id, user_id)
+        if not acc:
+            await send(chat_id, f'😕 {m} ما عندك حساب بنكي', reply)
+            return
+        tf_acc = get_bank(data, chat_id, tf['id'])
+        if not tf_acc:
+            await send(chat_id, f'😕 {mention(tf)} ما عنده حساب بنكي', reply)
+            return
+        qty = int(gift_match.group(1))
+        item_raw = gift_match.group(2).strip()
+        item_key = normalize_item(item_raw)
+        if not item_key or item_key not in ITEM_PRICES:
+            await send(chat_id, f'⚠️ اسم الشيء غير صحيح\nاكتب <b>المتجر</b> لعرض الأشياء المتاحة', reply)
+            return
+        props = acc.get('properties', {})
+        owned = props.get(item_key, 0)
+        if owned < qty:
+            await send(chat_id,
+                f'⚠️ ما عندك كمية كافية\nعندك: <b>{owned} {item_key}</b> {ITEM_EMOJI.get(item_key, "")}',
+                reply
+            )
+            return
+        props[item_key] = owned - qty
+        if props[item_key] == 0:
+            del props[item_key]
+        if 'properties' not in tf_acc:
+            tf_acc['properties'] = {}
+        tf_acc['properties'][item_key] = tf_acc['properties'].get(item_key, 0) + qty
+        save_data(data)
+        emoji = ITEM_EMOJI.get(item_key, '🏷️')
+        await send(chat_id,
+            f'🎁 {m} أهدى {mention(tf)}\n\n'
+            f'{emoji} <b>{qty} {item_key}</b>',
             reply
         )
         return
@@ -3835,7 +4101,7 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
             await send(chat_id, '⚠️ المبلغ يجب أن يكون أكبر من صفر', reply)
             return
         if acc.get('balance', 0) < amount:
-            await send(chat_id, f'💸 فلوسك ما تكفي يا فكر\n💳 رصيدك: <b>{acc.get("balance", 0):,}</b> دينار', reply)
+            await send(chat_id, f'💸 فلوسك ما تكفي يا فكر\n💳 رصيدك: <b>{fmt_money(acc.get("balance", 0))}</b> دينار', reply)
             return
         cid_str = str(chat_id)
         target_uid = None
@@ -3857,9 +4123,9 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
         save_data(data)
         await send(chat_id,
             f'✅ <b>تم التحويل بنجاح</b>\n\n'
-            f'💸 المبلغ المحول: <b>{amount:,}</b> دينار\n'
+            f'💸 المبلغ المحول: <b>{fmt_money(amount)}</b> دينار\n'
             f'📤 إلى حساب: <code>{target_account_number}</code>\n'
-            f'💳 رصيدك الجديد: <b>{acc["balance"]:,}</b> دينار',
+            f'💳 رصيدك الجديد: <b>{fmt_money(acc["balance"])}</b> دينار',
             reply
         )
         return
@@ -3882,7 +4148,7 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
             lines.append(f'{emoji} {item}: <b>{qty}</b>')
         await send(chat_id,
             f'🏠 <b>ممتلكات {name(from_)}</b>\n\n' + '\n'.join(lines) +
-            f'\n\n💳 الرصيد: <b>{acc.get("balance", 0):,}</b> دينار',
+            f'\n\n💳 الرصيد: <b>{fmt_money(acc.get("balance", 0))}</b> دينار',
             reply
         )
         return
