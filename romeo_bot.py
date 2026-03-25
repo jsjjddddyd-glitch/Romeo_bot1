@@ -27,12 +27,8 @@ _session = None
 _session_created_at = 0
 SESSION_MAX_AGE = 600  # تجديد الجلسة كل 10 دقائق
 
-# ===== Circuit Breaker للـ API =====
-# إذا حصل خطأ اتصال، يُعلّم لمدة قصيرة فيكون كل الاستدعاءات اللاحقة ترجع None فوراً
-# بدل ما كل استدعاء ينتظر 1+2 ثانية على حدة
-_cb_open = False        # True = الدائرة مفتوحة (API متعطل مؤقتاً)
-_cb_open_until = 0.0   # الوقت اللي ترجع فيه للمحاولة
-_CB_TIMEOUT = 4.0      # ثواني قبل المحاولة مجدداً بعد أول خطأ
+# ===== إعدادات الاتصال بالـ API =====
+# البوت يحاول دائماً بدون توقف حتى عند أخطاء الاتصال
 
 async def get_session():
     global _session, _session_created_at
@@ -500,6 +496,25 @@ def normalize_item(item_name):
 def fmt_money(n):
     return f'<code>{n}</code>'
 
+def increment_msg_count(data, chat_id, user_id, first_name=None):
+    cid = str(chat_id)
+    uid = str(user_id)
+    if 'msg_counts' not in data:
+        data['msg_counts'] = {}
+    if cid not in data['msg_counts']:
+        data['msg_counts'][cid] = {}
+    data['msg_counts'][cid][uid] = data['msg_counts'][cid].get(uid, 0) + 1
+    if first_name:
+        if 'user_names' not in data:
+            data['user_names'] = {}
+        data['user_names'][uid] = first_name
+
+def get_msg_count(data, chat_id, user_id):
+    return data.get('msg_counts', {}).get(str(chat_id), {}).get(str(user_id), 0)
+
+def get_user_display(data, uid_str):
+    return data.get('user_names', {}).get(uid_str, f'مستخدم {uid_str}')
+
 def get_bank(data, chat_id, user_id):
     cid = str(chat_id)
     uid = str(user_id)
@@ -558,17 +573,9 @@ def get_ahkam_state(data, chat_id):
 # ===========================
 
 async def api_call(method, params):
-    global _session, _cb_open, _cb_open_until
-    now = time.time()
+    global _session
 
-    # ===== Circuit Breaker: إذا الدائرة مفتوحة، ارجع None فوراً =====
-    if _cb_open:
-        if now < _cb_open_until:
-            return None  # لا تضيّع وقت بالانتظار، الاتصال مقطوع
-        else:
-            _cb_open = False  # انتهت فترة الراحة، جرّب مجدداً
-
-    for attempt in range(2):  # محاولتان بدل 3 — فرق الوقت كبير
+    for attempt in range(3):  # 3 محاولات دائماً بدون أي توقف للدائرة
         try:
             session = await get_session()
             async with session.post(f'{API}/{method}', json=params) as res:
@@ -582,19 +589,15 @@ async def api_call(method, params):
                         await asyncio.sleep(min(retry_after, 5))
                     return None
         except asyncio.TimeoutError:
-            print(f'⏱ Timeout في {method} (محاولة {attempt+1}/2)')
-            _cb_open = True
-            _cb_open_until = time.time() + _CB_TIMEOUT
+            print(f'⏱ Timeout في {method} (محاولة {attempt+1}/3)')
             _session = None
-            if attempt == 0:
-                await asyncio.sleep(0.5)
+            if attempt < 2:
+                await asyncio.sleep(0.3)
         except aiohttp.ClientConnectionError as e:
-            print(f'🔌 خطأ اتصال في {method}: {e} (محاولة {attempt+1}/2)')
-            _cb_open = True
-            _cb_open_until = time.time() + _CB_TIMEOUT
+            print(f'🔌 خطأ اتصال في {method}: {e} (محاولة {attempt+1}/3)')
             _session = None
-            if attempt == 0:
-                await asyncio.sleep(0.5)
+            if attempt < 2:
+                await asyncio.sleep(0.3)
         except Exception as e:
             print(f'❌ خطأ في {method}: {type(e).__name__}: {e}')
             return None
@@ -2003,6 +2006,10 @@ async def handle_update(update):
         save_state(state)
         return
 
+    # ===== عداد الرسائل =====
+    if user_id and not from_.get('is_bot'):
+        increment_msg_count(data, chat_id, user_id, from_.get('first_name'))
+
     if not text:
         await media_mod(msg, data, settings)
         save_data(data)
@@ -2951,6 +2958,61 @@ async def process_cmd(msg, data, state, text, settings):
             await send(chat_id, f'• رتبته هي ← <b>{rank}</b>', reply)
         else:
             await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة رتبته', reply)
+        return
+
+    # رسائلي / رسايلي - مسموح للجميع دائماً
+    if text in ['رسائلي', 'رسايلي', 'رسالتي']:
+        if msg.get('reply_to_message'):
+            tf = msg['reply_to_message'].get('from', {})
+            if tf.get('is_bot'):
+                await send(chat_id, '• البوتات لا تُحسب رسائلها', reply)
+                return
+            tuid = tf['id']
+            tname = tf.get('first_name', 'هذا الشخص')
+            count = get_msg_count(data, chat_id, tuid)
+            await send(chat_id,
+                f'• عدد رسائل <a href="tg://user?id={tuid}">{tname}</a> ←  {fmt_money(count)} رسالة',
+                reply)
+        else:
+            count = get_msg_count(data, chat_id, user_id)
+            await send(chat_id,
+                f'• عدد رسائلك ←  {fmt_money(count)} رسالة',
+                reply)
+        return
+
+    if text in ['رسائله', 'رسايله', 'رسائلها', 'رسايلها']:
+        if msg.get('reply_to_message'):
+            tf = msg['reply_to_message'].get('from', {})
+            if tf.get('is_bot'):
+                await send(chat_id, '• البوتات لا تُحسب رسائلها', reply)
+                return
+            tuid = tf['id']
+            tname = tf.get('first_name', 'هذا الشخص')
+            count = get_msg_count(data, chat_id, tuid)
+            await send(chat_id,
+                f'• عدد رسائل <a href="tg://user?id={tuid}">{tname}</a> ←  {fmt_money(count)} رسالة',
+                reply)
+        else:
+            await send(chat_id, '⚠️ رد على رسالة شخص لمعرفة عدد رسائله', reply)
+        return
+
+    # التوب / المتفاعلين - للمشرفين وما فوق
+    if text in ['التوب', 'توب المتفاعلين', 'المتفاعلين', 'توب']:
+        if not await is_admin_up(data, chat_id, user_id):
+            await send(chat_id, '• هذا الأمر للمشرفين فقط', reply)
+            return
+        counts = data.get('msg_counts', {}).get(str(chat_id), {})
+        if not counts:
+            await send(chat_id, '• لا توجد إحصائيات بعد، ابدأ بإرسال الرسائل!', reply)
+            return
+        sorted_users = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        lines = ['🏆 <b>توب المتفاعلين</b>\n']
+        medals = ['🥇', '🥈', '🥉']
+        for i, (uid_str, cnt) in enumerate(sorted_users):
+            icon = medals[i] if i < 3 else f'{i+1}.'
+            name = get_user_display(data, uid_str)
+            lines.append(f'{icon} <a href="tg://user?id={uid_str}">{name}</a> ← {fmt_money(cnt)} رسالة')
+        await send(chat_id, '\n'.join(lines), reply)
         return
 
     # التنظيف - للمالك فقط
@@ -4405,8 +4467,8 @@ async def webhook_watchdog():
             print(f'Webhook watchdog error: {e}')
 
 async def keep_alive_loop():
-    """يحيّي الخادم كل دقيقة ويُعيد فتح الـ circuit breaker عند نجاح الاتصال"""
-    global _cb_open, _cb_open_until, _session
+    """يحيّي الخادم كل دقيقة ويتحقق من الاتصال"""
+    global _session
     await asyncio.sleep(20)
     while True:
         try:
@@ -4419,21 +4481,16 @@ async def keep_alive_loop():
                     pass
             except:
                 pass
-            # جرّب تليغرام مباشرة (بتجاوز circuit breaker)
+            # تحقق من الاتصال بتيليغرام
             try:
                 sess = await get_session()
                 async with sess.post(f'{API}/getMe', json={},
                     timeout=aiohttp.ClientTimeout(total=6)) as res:
                     d = await res.json()
                     if d.get('ok'):
-                        if _cb_open:
-                            _cb_open = False
-                            print(f'✅ الاتصال عاد — Circuit Breaker مُغلق')
                         print(f'💓 Keepalive OK - {datetime.now().strftime("%H:%M:%S")}')
             except Exception as e2:
                 print(f'💔 Keepalive ping فشل: {e2}')
-                _cb_open = True
-                _cb_open_until = time.time() + _CB_TIMEOUT
                 _session = None
         except Exception as e:
             print(f'Keepalive error: {e}')
