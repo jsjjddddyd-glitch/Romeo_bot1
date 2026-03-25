@@ -301,7 +301,7 @@ def get_settings(data, chat_id):
         'lock_external_reply': False, 'lock_quote': False,
         'disable_id': False, 'disable_service': False, 'disable_fun': True,
         'disable_welcome': False, 'disable_link': False, 'disable_auto_replies': False,
-        'disable_games': True,
+        'disable_games': True, 'disable_top': False,
         'lock_nsfw': False,
         'lock_nsfw_restrict': False,
         'lock_nsfw_warn': False,
@@ -471,6 +471,39 @@ KAT_QUESTIONS = [
     'أكثر إنجاز تفخر فيه لحد الحين؟ 🏆',
     'وش الحلم اللي تكرر معك وما نسيته؟',
     'لو عندك رسالة لنفسك قبل 5 سنين وش كنت تقوله؟',
+]
+
+SOWAR_QUESTIONS = [
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/0/05/Flag_of_Brazil.svg/1280px-Flag_of_Brazil.svg.png', '🌍 ما هي دولة هذه العلم؟', 'البرازيل'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/Flag_of_Thailand.svg/1280px-Flag_of_Thailand.svg.png', '🌍 ما هي دولة هذا العلم؟', 'تايلاند'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/f/f3/Flag_of_Russia.svg/1280px-Flag_of_Russia.svg.png', '🌍 ما هي دولة هذا العلم؟', 'روسيا'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/b/ba/Flag_of_Germany.svg/1280px-Flag_of_Germany.svg.png', '🌍 ما هي دولة هذا العلم؟', 'المانيا'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/Flag_of_France.svg/1280px-Flag_of_France.svg.png', '🌍 ما هي دولة هذا العلم؟', 'فرنسا'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/Flag_of_Saudi_Arabia.svg/1280px-Flag_of_Saudi_Arabia.svg.png', '🌍 ما هي دولة هذا العلم؟', 'السعودية'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Flag_of_Argentina.svg/1280px-Flag_of_Argentina.svg.png', '🌍 ما هي دولة هذا العلم؟', 'الارجنتين'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Flag_of_India.svg/1280px-Flag_of_India.svg.png', '🌍 ما هي دولة هذا العلم؟', 'الهند'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/9/9e/Flag_of_Japan.svg/1280px-Flag_of_Japan.svg.png', '🌍 ما هي دولة هذا العلم؟', 'اليابان'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/2/2c/Flag_of_Morocco.svg/1280px-Flag_of_Morocco.svg.png', '🌍 ما هي دولة هذا العلم؟', 'المغرب'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/7/77/Flag_of_Algeria.svg/1280px-Flag_of_Algeria.svg.png', '🌍 ما هي دولة هذا العلم؟', 'الجزائر'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/Flag_of_Kenya.svg/1280px-Flag_of_Kenya.svg.png', '🌍 ما هي دولة هذا العلم؟', 'كينيا'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/3/3e/Flag_of_Turkey.svg/1280px-Flag_of_Turkey.svg.png', '🌍 ما هي دولة هذا العلم؟', 'تركيا'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/a/aa/Flag_of_Kuwait.svg/1280px-Flag_of_Kuwait.svg.png', '🌍 ما هي دولة هذا العلم؟', 'الكويت'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/1/11/Flag_of_Egypt.svg/1280px-Flag_of_Egypt.svg.png', '🌍 ما هي دولة هذا العلم؟', 'مصر'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/thumb/6/6f/Taj_Mahal%2C_Agra%2C_India_edit3.jpg/1280px-Taj_Mahal%2C_Agra%2C_India_edit3.jpg', '🏛️ ما اسم هذا المعلم السياحي؟', 'تاج محل'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/1/10/Empire_State_Building_%28aerial_view%29.jpg/800px-Empire_State_Building_%28aerial_view%29.jpg', '🏛️ ما اسم هذا البرج الشهير؟', 'برج امباير ستيت'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/e/e6/Paris_Night.jpg/1280px-Paris_Night.jpg', '🏛️ ما اسم هذا البرج الشهير في فرنسا؟', 'برج ايفل'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/Colosseo_2020.jpg/1280px-Colosseo_2020.jpg', '🏛️ ما اسم هذا المعلم في ايطاليا؟', 'الكولوسيوم'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png', '🐾 ما اسم هذا الحيوان؟', 'كنغر'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/1200px-Cat03.jpg', '🐾 ما اسم هذا الحيوان؟', 'قط'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/d/d9/Collage_of_Nine_Dogs.jpg/1200px-Collage_of_Nine_Dogs.jpg', '🐾 ما اسم هذا الحيوان؟', 'كلب'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/3/37/African_Bush_Elephant.jpg/1200px-African_Bush_Elephant.jpg', '🐾 ما اسم هذا الحيوان الضخم؟', 'فيل'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/0/0a/The_tiger_in_the_water.jpg/1200px-The_tiger_in_the_water.jpg', '🐾 ما اسم هذا الحيوان المخطط؟', 'نمر'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/9/9c/Giraffe_Mikumi_National_Park.jpg/1200px-Giraffe_Mikumi_National_Park.jpg', '🐾 ما اسم هذا الحيوان طويل الرقبة؟', 'زرافة'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/1/1c/Miroslava_Duma.jpg/400px-Miroslava_Duma.jpg', '🍎 ما هذه الفاكهة الحمراء؟', 'تفاحة'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/1/15/Red_Apple.jpg/1200px-Red_Apple.jpg', '🍎 ما هذه الفاكهة الحمراء؟', 'تفاحة'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/8/8a/Banana-Chocolate-Chip-Cookies-Recipe.jpg/1200px-Banana-Chocolate-Chip-Cookies-Recipe.jpg', '🍌 ما هذه الفاكهة الصفراء؟', 'موز'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/Hapus_Mango.jpg/1200px-Hapus_Mango.jpg', '🥭 ما هذه الفاكهة؟', 'مانجو'),
+    ('https://upload.wikimedia.org/wikipedia/commons/thumb/1/13/Watermelon_seedless_2009_16x9.jpg/1280px-Watermelon_seedless_2009_16x9.jpg', '🍉 ما هذه الفاكهة الحمراء والخضراء؟', 'بطيخ'),
 ]
 
 REGULAR_SHOP_ITEMS = [
@@ -1173,8 +1206,16 @@ menu_texts = {
         '• <b>رتبة</b> (رد) - رتبة الشخص المردود عليه\n'
         '• <b>رتبته</b> (رد) - رتبة شخص\n'
         '• <b>انشاء</b> - تاريخ إنشاء الحساب\n\n'
+        '🏆 <b>التوب:</b>\n'
+        '• <b>التوب</b> - أكثر 10 أعضاء تفاعلاً في المجموعة\n'
+        '• تعطيل التوب | تفعيل التوب\n\n'
         '🤫 <b>الهمسة:</b>\n'
         '• <b>همسه / اهمس</b> (رد على رسالة شخص) - ترسل همسة خاصة له فقط\n\n'
+        '🤖 <b>ردود البوت:</b>\n'
+        '• <b>تعطيل ردود البوت</b> - يوقف ردود البوت التلقائية (بوت، ها، شتريد...)\n'
+        '• <b>تفعيل ردود البوت</b> - يعيد تشغيلها\n\n'
+        '🖼️ <b>صورة الملصق:</b>\n'
+        '• رد على أي ملصق ثابت بكلمة <b>صوره</b> لتحويله إلى صورة\n\n'
         '🎵 <b>اليوتيوب:</b>\n'
         '• <b>يوت [اسم الأغنية]</b> - البحث عن أغنية وإرسالها\n'
         '• تعطيل اليوتيوب | تفعيل اليوتيوب'
@@ -1243,6 +1284,9 @@ menu_texts = {
         '• <b>اهداء [عدد] [اسم الشيء]</b> (رد) - إهداء ممتلكات لشخص\n'
         '• <b>ممتلكاتي</b> - عرض ممتلكاتك\n'
         '• <b>تحويل [مبلغ] [رقم الحساب]</b> - تحويل فلوس لشخص آخر\n\n'
+        '<b>🖼️ لعبة صور:</b>\n'
+        '• اكتب <b>صور</b> لتلقي صورة عشوائية وتخمين الإجابة\n'
+        '• الفائز يحصل على 140-303 دينار\n\n'
         '🔴 تعطيل الالعاب | تفعيل الالعاب'
     ),
 }
@@ -2998,6 +3042,8 @@ async def process_cmd(msg, data, state, text, settings):
 
     # التوب / المتفاعلين - للمشرفين وما فوق
     if text in ['التوب', 'توب المتفاعلين', 'المتفاعلين', 'توب']:
+        if settings.get('disable_top'):
+            return
         if not await is_admin_up(data, chat_id, user_id):
             await send(chat_id, '• هذا الأمر للمشرفين فقط', reply)
             return
@@ -3192,6 +3238,40 @@ async def process_cmd(msg, data, state, text, settings):
                 youtube_pending[key] = r['title']
             await send_youtube_results(chat_id, msg_id, query, results)
             return
+
+        # ===========================
+        # تحويل الملصق الثابت إلى صورة
+        # ===========================
+        if text == 'صوره':
+            replied = msg.get('reply_to_message')
+            if replied:
+                sticker = replied.get('sticker')
+                if sticker and not sticker.get('is_animated') and not sticker.get('is_video'):
+                    file_info = await get_file(sticker['file_id'])
+                    if file_info:
+                        fp = file_info.get('file_path')
+                        if fp:
+                            file_url = f'https://api.telegram.org/file/bot{TOKEN}/{fp}'
+                            try:
+                                session = await get_session()
+                                async with session.get(file_url) as resp:
+                                    img_bytes = await resp.read()
+                                form = aiohttp.FormData()
+                                form.add_field('chat_id', str(chat_id))
+                                form.add_field('reply_to_message_id', str(msg_id))
+                                form.add_field('photo', img_bytes, filename='sticker.webp', content_type='image/webp')
+                                async with session.post(f'{API}/sendPhoto', data=form) as r:
+                                    pass
+                            except Exception as e:
+                                print(f'صوره error: {e}')
+                                await send(chat_id, '❌ تعذّر تحويل الملصق إلى صورة', reply)
+                    return
+                else:
+                    await send(chat_id, '⚠️ رد على ملصق ثابت (غير متحرك) لتحويله إلى صورة', reply)
+                    return
+            else:
+                await send(chat_id, '⚠️ رد على ملصق ثابت لتحويله إلى صورة', reply)
+                return
 
     # ===========================
     # أوامر الرتب (تُفحص قبل التسلية)
@@ -3425,9 +3505,11 @@ async def process_cmd(msg, data, state, text, settings):
             'تعطيل الرابط': ['disable_link', True], 'تفعيل الرابط': ['disable_link', False],
             'تعطيل الردود التلقائية': ['disable_auto_replies', True], 'تفعيل الردود التلقائية': ['disable_auto_replies', False],
             'تعطيل الردود التلقائيه': ['disable_auto_replies', True], 'تفعيل الردود التلقائيه': ['disable_auto_replies', False],
+            'تعطيل ردود البوت': ['disable_auto_replies', True], 'تفعيل ردود البوت': ['disable_auto_replies', False],
             'تعطيل الالعاب': ['disable_games', True], 'تفعيل الالعاب': ['disable_games', False],
             'تعطيل اليوتيوب': ['youtube_enabled', False], 'تفعيل اليوتيوب': ['youtube_enabled', True],
             'تعطيل اليوتويب': ['youtube_enabled', False], 'تفعيل اليوتويب': ['youtube_enabled', True],
+            'تعطيل التوب': ['disable_top', True], 'تفعيل التوب': ['disable_top', False],
         }
         if text in dis_map:
             key, val = dis_map[text]
@@ -3578,6 +3660,33 @@ async def process_cmd(msg, data, state, text, settings):
             await send(chat_id, '🗑️ تم مسح الرسالة')
             return
 
+        masc_match = re.match(r'^مسح\s+(\d+)$', text)
+        if masc_match:
+            count = min(int(masc_match.group(1)), 500)
+            ids_to_delete = list(range(msg_id, msg_id - count, -1))
+            results = await asyncio.gather(
+                *[delete(chat_id, mid) for mid in ids_to_delete],
+                return_exceptions=True
+            )
+            deleted = sum(1 for r in results if r is not False and not isinstance(r, Exception))
+            await send(chat_id, f'🗑️ تم مسح <b>{deleted}</b> رسالة')
+            return
+
+        if text == 'مسح الكل':
+            if not await is_owner_up(data, chat_id, user_id):
+                await send(chat_id, '⛔ هذا الأمر للمالك فقط', reply)
+                return
+            ranks = data.get('user_ranks', {}).get(cid, {})
+            count = 0
+            for uid_key in list(ranks.keys()):
+                if ranks[uid_key] != 'عضو':
+                    ranks[uid_key] = 'عضو'
+                    count += 1
+            save_data(data)
+            await delete(chat_id, msg_id)
+            await send(chat_id, f'✅ تم تصفير رتب <b>{count}</b> عضو، الجميع أصبح عضو الآن')
+            return
+
     # ===========================
     # الألعاب
     # ===========================
@@ -3592,6 +3701,32 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
     now = datetime.now().timestamp()
 
     # ===========================
+    # فحص إجابة لعبة الصور
+    # ===========================
+    if 'games_state' in data and cid in data['games_state']:
+        sowar = data['games_state'][cid].get('sowar', {})
+        if sowar.get('active'):
+            elapsed = now - sowar.get('started_at', now)
+            if elapsed > 60:
+                data['games_state'][cid]['sowar'] = {'active': False}
+                save_data(data)
+                await send(chat_id, f'⏰ انتهى الوقت! الإجابة الصحيحة كانت: <b>{sowar["answer"]}</b>')
+            elif text and text.strip() == sowar.get('answer', '').strip():
+                prize = random.randint(140, 303)
+                data['games_state'][cid]['sowar'] = {'active': False}
+                acc = get_bank(data, chat_id, user_id)
+                if acc:
+                    acc['balance'] = acc.get('balance', 0) + prize
+                save_data(data)
+                await send(chat_id,
+                    f'🎉 {m} أجاب صح!\n\n'
+                    f'✅ الإجابة: <b>{sowar["answer"]}</b>\n'
+                    f'💰 ربحت: <b>{prize}</b> دينار',
+                    reply
+                )
+                return
+
+    # ===========================
     # لعبة كت
     # ===========================
     if text == 'كت':
@@ -3600,6 +3735,39 @@ async def handle_games(msg, data, text, chat_id, msg_id, from_, user_id, m, cid,
             f'‹ {m} ›\n{question}',
             reply
         )
+        return
+
+    # ===========================
+    # لعبة الصور
+    # ===========================
+    if text == 'صور':
+        if 'games_state' not in data:
+            data['games_state'] = {}
+        if cid not in data['games_state']:
+            data['games_state'][cid] = {}
+        sowar = data['games_state'][cid].get('sowar', {})
+        if sowar.get('active'):
+            elapsed = now - sowar.get('started_at', now)
+            if elapsed <= 60:
+                await send(chat_id, '⚠️ في لعبة صور جارية الحين، اكتب الإجابة!', reply)
+                return
+        img_url, question, answer = random.choice(SOWAR_QUESTIONS)
+        data['games_state'][cid]['sowar'] = {
+            'active': True,
+            'answer': answer,
+            'started_at': now
+        }
+        save_data(data)
+        await api_call('sendPhoto', {
+            'chat_id': chat_id,
+            'photo': img_url,
+            'caption': (
+                f'🖼️ <b>لعبة الصور</b>\n\n'
+                f'❓ {question}\n\n'
+                f'⏰ عندك دقيقة للإجابة!'
+            ),
+            'parse_mode': 'HTML'
+        })
         return
 
     # ===========================
