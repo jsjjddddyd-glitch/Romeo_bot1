@@ -845,20 +845,37 @@ async def _call_gemini_vision(image_bytes: bytes, prompt: str, mime_type: str = 
                 {'inline_data': {'mime_type': mime_type, 'data': b64}}
             ]
         }],
-        'generationConfig': {'temperature': 0, 'maxOutputTokens': 200}
+        'generationConfig': {'temperature': 0, 'maxOutputTokens': 200},
+        # تعطيل فلاتر الأمان الداخلية في Gemini حتى يتمكن من تحليل أي محتوى
+        'safetySettings': [
+            {'category': 'HARM_CATEGORY_HARASSMENT',        'threshold': 'BLOCK_NONE'},
+            {'category': 'HARM_CATEGORY_HATE_SPEECH',       'threshold': 'BLOCK_NONE'},
+            {'category': 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'threshold': 'BLOCK_NONE'},
+            {'category': 'HARM_CATEGORY_DANGEROUS_CONTENT', 'threshold': 'BLOCK_NONE'},
+            {'category': 'HARM_CATEGORY_CIVIC_INTEGRITY',   'threshold': 'BLOCK_NONE'},
+        ]
     }
     session = await get_session()
     try:
         async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=20)) as res:
             if res.status == 429:
-                # الحد اليومي لهذا المفتاح انتهى، جرّب التالي
                 print(f'Gemini key quota exceeded, rotating to next key...')
                 return await _call_gemini_vision(image_bytes, prompt, mime_type, _tried + 1)
             if res.status != 200:
                 print(f'Gemini error status: {res.status}')
                 return None
             data = await res.json()
-            text = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            candidates = data.get('candidates', [])
+            if not candidates:
+                print(f'Gemini no candidates — blocked?: {data.get("promptFeedback", "")}')
+                return None
+            candidate = candidates[0]
+            # تحقق من أن الرد لم يُوقف بسبب فلاتر الأمان
+            finish_reason = candidate.get('finishReason', '')
+            if finish_reason == 'SAFETY':
+                print(f'Gemini SAFETY block despite BLOCK_NONE — skipping')
+                return None
+            text = candidate.get('content', {}).get('parts', [{}])[0].get('text', '')
             return text.strip()
     except Exception as e:
         print(f'Gemini API error: {e}')
@@ -882,21 +899,21 @@ async def _download_file_bytes(file_id) -> bytes | None:
         print(f'File download error: {e}')
         return None
 
-# Gemini يُستخدم فقط للأسلحة والمخدرات والدماء والهويات
-# (لا نطلب منه المحتوى الجنسي لأنه يرفض تحليله)
-GEMINI_PROMPT = """افحص هذه الصورة بدقة وأجب بـ JSON فقط بدون أي نص إضافي.
-ابحث فقط عن:
-1. أسلحة نارية أو سكاكين أو مسدسات أو بنادق أو أسلحة حادة
-2. مواد مخدرة: حشيش، كوكايين، حبوب مخدرة، أدوات تعاطي (سيرنجة، أنابيب تدخين)
-3. دماء بكميات كبيرة أو جثث أو محتوى عنيف صريح
-4. وثائق هوية رسمية: جواز سفر، بطاقة هوية وطنية، رخصة قيادة
+GEMINI_PROMPT = """أنت نظام مراقبة محتوى لمجموعة تيليغرام. مهمتك فحص الصورة والإبلاغ عن أي محتوى مخالف.
 
-أجب بهذا الشكل الحرفي فقط:
+افحص بدقة وأبلغ عن:
+1. محتوى جنسي أو إباحي أو عري أو شبه عري (بكيني، ملابس داخلية، ديكولتيه، أي نشاط جنسي)
+2. أسلحة نارية أو سكاكين أو مسدسات أو بنادق
+3. مواد مخدرة: حشيش، كوكايين، حبوب مشبوهة، أدوات تعاطي (سيرنجة، أنابيب)
+4. دماء كثيرة أو عنف صريح أو ذبح
+5. وثائق هوية رسمية: جواز سفر، بطاقة هوية، رخصة قيادة
+
+أجب بـ JSON فقط بدون أي كلام آخر:
 {"violation": true, "type": "نوع المخالفة"}
-أو
+أو إذا لا توجد مخالفة:
 {"violation": false, "type": null}
 
-الأنواع المقبولة فقط: "أسلحة" أو "مواد ممنوعة" أو "محتوى عنيف (دماء)" أو "وثيقة حكومية (هوية/جواز)" """
+الأنواع الممكنة: "إباحي" أو "أسلحة" أو "مواد ممنوعة" أو "محتوى عنيف (دماء)" أو "وثيقة حكومية (هوية/جواز)" """
 
 async def check_image_nsfw(file_id):
     try:
@@ -904,12 +921,12 @@ async def check_image_nsfw(file_id):
         if not img_bytes:
             return False, None
 
-        # الخطوة 1: NudeNet — يكشف المحتوى الجنسي/الإباحي محلياً
+        # الخطوة 1: NudeNet — فحص محلي سريع للمحتوى الجنسي
         is_nude = await _check_nudity_nudenet(img_bytes)
         if is_nude:
             return True, 'إباحي'
 
-        # الخطوة 2: Gemini — يكشف الأسلحة والمخدرات والدماء والهويات
+        # الخطوة 2: Gemini مع تعطيل الفلاتر — يكشف كل المخالفات
         if not GEMINI_API_KEYS:
             return False, None
         response = await _call_gemini_vision(img_bytes, GEMINI_PROMPT)
