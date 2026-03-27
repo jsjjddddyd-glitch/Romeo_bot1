@@ -18,8 +18,19 @@ STATE_FILE = './state.json'
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '').rstrip('/')
 
-SIGHTENGINE_API_USER = '130043340'
-SIGHTENGINE_API_SECRET = 'RFozDT5M3VYmccC2rcArKqnMPWPCKJfE'
+# ===== مفاتيح Gemini 2.0 Flash (5 حسابات = 7500 فحص/يوم) =====
+# ضع مفتاح كل حساب في مكانه — اتركه فارغاً إذا ما عندك
+GEMINI_API_KEYS = [
+    'AIzaSyAxxXj3MOchhYI5xKYeWiLysZaWfRXLCjw',
+    'AIzaSyCfAf31hw8X_upzweTpEJz6_iKQUdOU0GU',
+    'AIzaSyC3LaPHxrLY3xuQqdWaMgyMNc0r2Ri2V24',
+    'AIzaSyBdCi4h0NIeEhww_cFYKJn2SvNhUGC8qLU',
+    'AIzaSyD7WWrcIxciZZ-1oFcHlz7w9uHS8ZXMM1I',
+]
+# يتجاهل المفاتيح الفارغة تلقائياً
+GEMINI_API_KEYS = [k for k in GEMINI_API_KEYS if k.strip()]
+GEMINI_KEY_INDEX = 0  # مؤشر المفتاح الحالي
+GEMINI_MODEL = 'gemini-2.0-flash'
 
 DEVELOPER_USERNAME = 'c9aac'
 
@@ -745,168 +756,134 @@ async def is_developer(user_id, username=None):
     return False
 
 # ===========================
-# NSFW IMAGE DETECTION
+# GEMINI 2.0 FLASH — كشف المحتوى المخالف
+# يغطي: إباحي، أسلحة، مخدرات، دماء، وثائق هوية
+# يتناوب تلقائياً بين 5 مفاتيح API = 7500 فحص/يوم مجاناً
 # ===========================
 
+def _get_next_gemini_key():
+    global GEMINI_KEY_INDEX
+    if not GEMINI_API_KEYS:
+        return None
+    key = GEMINI_API_KEYS[GEMINI_KEY_INDEX % len(GEMINI_API_KEYS)]
+    GEMINI_KEY_INDEX += 1
+    return key
+
+async def _call_gemini_vision(image_bytes: bytes, prompt: str, mime_type: str = 'image/jpeg', _tried: int = 0):
+    import base64
+    if _tried >= len(GEMINI_API_KEYS):
+        # جميع المفاتيح استُنفدت اليوم
+        print('All Gemini keys quota exceeded for today.')
+        return None
+    key = _get_next_gemini_key()
+    if not key:
+        return None
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={key}'
+    b64 = base64.b64encode(image_bytes).decode()
+    payload = {
+        'contents': [{
+            'parts': [
+                {'text': prompt},
+                {'inline_data': {'mime_type': mime_type, 'data': b64}}
+            ]
+        }],
+        'generationConfig': {'temperature': 0, 'maxOutputTokens': 200}
+    }
+    session = await get_session()
+    try:
+        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=20)) as res:
+            if res.status == 429:
+                # الحد اليومي لهذا المفتاح انتهى، جرّب التالي
+                print(f'Gemini key quota exceeded, rotating to next key...')
+                return await _call_gemini_vision(image_bytes, prompt, mime_type, _tried + 1)
+            if res.status != 200:
+                print(f'Gemini error status: {res.status}')
+                return None
+            data = await res.json()
+            text = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            return text.strip()
+    except Exception as e:
+        print(f'Gemini API error: {e}')
+        return None
+
+async def _download_file_bytes(file_id) -> bytes | None:
+    file_info = await get_file(file_id)
+    if not file_info:
+        return None
+    file_path = file_info.get('file_path')
+    if not file_path:
+        return None
+    file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
+    session = await get_session()
+    try:
+        async with session.get(file_url, timeout=aiohttp.ClientTimeout(total=20)) as res:
+            if res.status != 200:
+                return None
+            return await res.read()
+    except Exception as e:
+        print(f'File download error: {e}')
+        return None
+
+GEMINI_PROMPT = """افحص هذه الصورة بدقة وأجب بـ JSON فقط بدون أي نص إضافي.
+ابحث عن:
+1. محتوى جنسي أو إباحي أو عري أو ملابس مثيرة (بكيني/ملابس داخلية/ديكولتيه)
+2. أسلحة نارية أو سكاكين أو أسلحة حادة
+3. مواد مخدرة أو حبوب مشبوهة أو معدات تعاطي
+4. دماء أو عنف أو محتوى مروّع
+5. وثائق هوية رسمية: جواز سفر، هوية وطنية، رخصة قيادة، بطاقة شخصية
+
+أجب بهذا الشكل الحرفي:
+{"violation": true/false, "type": "نوع المخالفة أو null"}
+
+أنواع المخالفة الممكنة: "إباحي" أو "أسلحة" أو "مواد ممنوعة" أو "محتوى عنيف (دماء)" أو "وثيقة حكومية (هوية/جواز)"
+إذا لا توجد مخالفة: {"violation": false, "type": null}"""
+
 async def check_image_nsfw(file_id):
-    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
+    if not GEMINI_API_KEYS:
         return False, None
     try:
-        file_info = await get_file(file_id)
-        if not file_info:
+        img_bytes = await _download_file_bytes(file_id)
+        if not img_bytes:
             return False, None
-        file_path = file_info.get('file_path')
-        if not file_path:
+        response = await _call_gemini_vision(img_bytes, GEMINI_PROMPT)
+        if not response:
             return False, None
-        file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
-        session = await get_session()
-        params = {
-            'url': file_url,
-            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content',
-            'api_user': SIGHTENGINE_API_USER,
-            'api_secret': SIGHTENGINE_API_SECRET
-        }
-        async with session.get('https://api.sightengine.com/1.0/check.json', params=params) as res:
-            if res.status != 200:
-                return False, None
-            result = await res.json()
-            if result.get('status') != 'success':
-                return False, None
-            nudity = result.get('nudity', {})
-            suggestive_classes = nudity.get('suggestive_classes', {})
-            if (
-                nudity.get('sexual_activity', 0) > 0.05
-                or nudity.get('sexual_display', 0) > 0.05
-                or nudity.get('erotica', 0) > 0.07
-                or nudity.get('very_suggestive', 0) > 0.1
-                or nudity.get('suggestive', 0) > 0.15
-                or suggestive_classes.get('suggestive_focus_body_part', 0) > 0.1
-                or suggestive_classes.get('lingerie', 0) > 0.1
-                or suggestive_classes.get('cleavage', 0) > 0.15
-                or suggestive_classes.get('bikini', 0) > 0.15
-                or suggestive_classes.get('miniskirt', 0) > 0.2
-            ):
-                return True, 'إباحي'
-            weapon = result.get('weapon', {})
-            weapon_classes = weapon.get('classes', {})
-            if (
-                weapon_classes.get('firearm', 0) > 0.3
-                or weapon_classes.get('knife', 0) > 0.3
-                or weapon_classes.get('gun', 0) > 0.3
-            ):
-                return True, 'أسلحة'
-            drug = result.get('recreational_drug', {})
-            drug_prob = drug.get('prob', 0)
-            drug_classes = drug.get('classes', {})
-            if drug_prob > 0.04 or any(v > 0.04 for v in drug_classes.values()):
-                return True, 'مواد ممنوعة'
-            gore = result.get('gore', {})
-            if gore.get('prob', 0) > 0.04:
-                return True, 'محتوى عنيف (دماء)'
-            # رصد الهويات عبر تحليل النص المكتشف في الصورة
-            text_content = result.get('text', {})
-            if isinstance(text_content, dict):
-                detected_items = text_content.get('detected', [])
-                detected_text = ' '.join([
-                    t.get('content', '') for t in detected_items
-                ]).lower()
-                # كلمات قاطعة تكفي وحدها للكشف (كلمة واحدة = هوية)
-                strong_id_keywords = [
-                    'passport', 'passeport', 'reisepass', 'passaporto', 'pasaporte',
-                    'national id', 'national identity', 'nationalausweis',
-                    'driver license', "driver's license", 'driving licence',
-                    'identity card', 'carte nationale', 'carte d\'identite',
-                    'personalausweis', 'bundesrepublik', 'republique francaise',
-                    'cedula de identidad', 'cedula ciudadania',
-                    'رقم الهوية', 'هوية وطنية', 'بطاقة هوية',
-                    'جواز السفر', 'رخصة القيادة', 'بطاقة شخصية',
-                    'الرقم القومي', 'رقم جواز', 'وثيقة سفر',
-                    'kingdom of saudi', 'المملكة العربية', 'الجمهورية العربية',
-                    'جمهورية العراق', 'جمهورية مصر', 'دولة الإمارات',
-                    'جمهورية تونس', 'المملكة المغربية', 'الجمهورية الجزائرية',
-                ]
-                for kw in strong_id_keywords:
-                    if kw in detected_text:
-                        return True, 'وثيقة حكومية (هوية/جواز)'
-                # كلمات تراكمية - يكفي وجود 2 منها
-                soft_id_keywords = [
-                    'republic', 'nationality', 'date of birth', 'expiry', 'expires',
-                    'surname', 'given name', 'given names', 'personal number',
-                    'place of birth', 'identification', 'mrz', 'citizen',
-                    'document no', 'doc no', 'document number', 'sex / sexe',
-                    'dowod', 'osobisty', 'ausweis', 'republique', 'dni',
-                    'الجنسية', 'تاريخ الميلاد', 'تاريخ الانتهاء', 'تاريخ الإصدار',
-                    'مكان الميلاد', 'نمرة الوثيقة', 'رقم الوثيقة',
-                    'الاسم الأول', 'اسم الأب', 'الاسم الكامل',
-                ]
-                soft_count = sum(1 for kw in soft_id_keywords if kw in detected_text)
-                if soft_count >= 2:
-                    return True, 'وثيقة حكومية (هوية/جواز)'
+        # استخراج JSON من الرد
+        import re as _re
+        match = _re.search(r'\{.*?\}', response, _re.DOTALL)
+        if not match:
             return False, None
+        data = json.loads(match.group())
+        if data.get('violation') and data.get('type'):
+            return True, data['type']
+        return False, None
     except Exception as e:
         print(f'NSFW check error: {e}')
         return False, None
 
 
 async def check_video_nsfw(file_id):
-    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
+    # للفيديو: نحمّل الفيديو ونرسله لـ Gemini كـ video/mp4
+    # الحد: 20 ميغابايت (حد تيليغرام للتحميل)، نأخذ أول 15MB فقط
+    if not GEMINI_API_KEYS:
         return False, None
     try:
-        file_info = await get_file(file_id)
-        if not file_info:
+        vid_bytes = await _download_file_bytes(file_id)
+        if not vid_bytes:
             return False, None
-        file_path = file_info.get('file_path')
-        if not file_path:
+        # نأخذ أول 15 ميغابايت فقط لضمان سرعة المعالجة
+        vid_bytes = vid_bytes[:15 * 1024 * 1024]
+        response = await _call_gemini_vision(vid_bytes, GEMINI_PROMPT, mime_type='video/mp4')
+        if not response:
             return False, None
-        file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
-        session = await get_session()
-        params = {
-            'url': file_url,
-            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0',
-            'interval': '0.5',
-            'api_user': SIGHTENGINE_API_USER,
-            'api_secret': SIGHTENGINE_API_SECRET
-        }
-        async with session.get('https://api.sightengine.com/1.0/video/check-sync.json', params=params) as res:
-            if res.status != 200:
-                return False, None
-            result = await res.json()
-            if result.get('status') != 'success':
-                return False, None
-            frames = result.get('data', {}).get('frames', [])
-            for frame in frames:
-                nudity = frame.get('nudity', {})
-                suggestive_classes = nudity.get('suggestive_classes', {})
-                if (
-                    nudity.get('sexual_activity', 0) > 0.05
-                    or nudity.get('sexual_display', 0) > 0.05
-                    or nudity.get('erotica', 0) > 0.07
-                    or nudity.get('very_suggestive', 0) > 0.1
-                    or nudity.get('suggestive', 0) > 0.15
-                    or suggestive_classes.get('suggestive_focus_body_part', 0) > 0.1
-                    or suggestive_classes.get('lingerie', 0) > 0.1
-                    or suggestive_classes.get('cleavage', 0) > 0.15
-                    or suggestive_classes.get('bikini', 0) > 0.15
-                    or suggestive_classes.get('miniskirt', 0) > 0.2
-                ):
-                    return True, 'إباحي'
-                weapon = frame.get('weapon', {})
-                weapon_classes = weapon.get('classes', {})
-                if (
-                    weapon_classes.get('firearm', 0) > 0.3
-                    or weapon_classes.get('knife', 0) > 0.3
-                    or weapon_classes.get('gun', 0) > 0.3
-                ):
-                    return True, 'أسلحة'
-                drug = frame.get('recreational_drug', {})
-                drug_prob = drug.get('prob', 0)
-                drug_classes = drug.get('classes', {})
-                if drug_prob > 0.04 or any(v > 0.04 for v in drug_classes.values()):
-                    return True, 'مواد ممنوعة'
-                gore = frame.get('gore', {})
-                if gore.get('prob', 0) > 0.04:
-                    return True, 'محتوى عنيف (دماء)'
+        import re as _re
+        match = _re.search(r'\{.*?\}', response, _re.DOTALL)
+        if not match:
             return False, None
+        data = json.loads(match.group())
+        if data.get('violation') and data.get('type'):
+            return True, data['type']
+        return False, None
     except Exception as e:
         print(f'Video NSFW check error: {e}')
         return False, None
