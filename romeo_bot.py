@@ -917,31 +917,41 @@ GEMINI_PROMPT = """أنت نظام مراقبة محتوى لمجموعة تيل
 
 async def check_image_nsfw(file_id):
     try:
+        print(f'[NSFW] ⬇️ تحميل الصورة: {file_id}')
         img_bytes = await _download_file_bytes(file_id)
         if not img_bytes:
+            print(f'[NSFW] ❌ فشل تحميل الصورة')
             return False, None
+        print(f'[NSFW] ✅ تم تحميل الصورة — الحجم: {len(img_bytes)} bytes')
 
-        # الخطوة 1: NudeNet — فحص محلي سريع للمحتوى الجنسي
+        # الخطوة 1: NudeNet
+        print(f'[NSFW] 🔍 فحص NudeNet...')
         is_nude = await _check_nudity_nudenet(img_bytes)
+        print(f'[NSFW] NudeNet النتيجة: {is_nude}')
         if is_nude:
             return True, 'إباحي'
 
-        # الخطوة 2: Gemini مع تعطيل الفلاتر — يكشف كل المخالفات
+        # الخطوة 2: Gemini
         if not GEMINI_API_KEYS:
+            print(f'[NSFW] ❌ لا توجد مفاتيح Gemini')
             return False, None
+        print(f'[NSFW] 🔍 إرسال لـ Gemini...')
         response = await _call_gemini_vision(img_bytes, GEMINI_PROMPT)
+        print(f'[NSFW] Gemini رد: {response}')
         if not response:
             return False, None
         import re as _re
         match = _re.search(r'\{.*?\}', response, _re.DOTALL)
         if not match:
+            print(f'[NSFW] ❌ لم يُوجد JSON في الرد')
             return False, None
         data = json.loads(match.group())
+        print(f'[NSFW] ✅ النتيجة النهائية: {data}')
         if data.get('violation') and data.get('type'):
             return True, data['type']
         return False, None
     except Exception as e:
-        print(f'NSFW check error: {e}')
+        print(f'[NSFW] ❌ خطأ: {e}')
         return False, None
 
 
