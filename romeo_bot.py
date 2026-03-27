@@ -756,10 +756,68 @@ async def is_developer(user_id, username=None):
     return False
 
 # ===========================
-# GEMINI 2.0 FLASH — كشف المحتوى المخالف
-# يغطي: إباحي، أسلحة، مخدرات، دماء، وثائق هوية
-# يتناوب تلقائياً بين 5 مفاتيح API = 7500 فحص/يوم مجاناً
+# نظام كشف المحتوى المخالف — هجين (NudeNet + Gemini)
+# NudeNet   : كشف المحتوى الجنسي/الإباحي — محلي، لا يرفض شيئاً، دقيق جداً
+# Gemini    : كشف الأسلحة، المخدرات، الدماء، الهويات — 7500 فحص/يوم مجاناً
 # ===========================
+
+# --- NudeNet (محلي) ---
+_nude_detector = None
+
+def _get_nude_detector():
+    global _nude_detector
+    if _nude_detector is None:
+        try:
+            from nudenet import NudeDetector
+            _nude_detector = NudeDetector()
+            print('✅ NudeNet detector loaded')
+        except Exception as e:
+            print(f'NudeNet load error: {e}')
+            _nude_detector = False
+    return _nude_detector if _nude_detector else None
+
+# التصنيفات التي تعني محتوى جنسياً صريحاً
+NUDE_EXPLICIT_LABELS = {
+    'EXPOSED_GENITALIA_F', 'EXPOSED_GENITALIA_M',
+    'EXPOSED_BREAST_F', 'EXPOSED_BUTTOCKS',
+    'EXPOSED_ANUS_F', 'EXPOSED_ANUS_M',
+    'EXPLICIT_SEXUAL_ACTIVITY', 'SEXUAL_ACTIVITY',
+}
+NUDE_SUGGESTIVE_LABELS = {
+    'EXPOSED_BREAST_F', 'COVERED_GENITALIA_F',
+    'EXPOSED_BUTTOCKS', 'SUGGESTIVE_CLASSES',
+}
+
+async def _check_nudity_nudenet(image_bytes: bytes) -> bool:
+    """يفحص الصورة محلياً بـ NudeNet — لا يعتمد على أي API خارجي"""
+    import asyncio, tempfile, os
+    detector = _get_nude_detector()
+    if not detector:
+        return False
+    loop = asyncio.get_event_loop()
+    def _detect():
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as f:
+                f.write(image_bytes)
+                tmp_path = f.name
+            detections = detector.detect(tmp_path)
+            for det in detections:
+                label = det.get('class', '')
+                score = det.get('score', 0)
+                if label in NUDE_EXPLICIT_LABELS and score > 0.45:
+                    return True
+            return False
+        except Exception as e:
+            print(f'NudeNet detect error: {e}')
+            return False
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
+    return await loop.run_in_executor(None, _detect)
 
 def _get_next_gemini_key():
     global GEMINI_KEY_INDEX
@@ -824,31 +882,39 @@ async def _download_file_bytes(file_id) -> bytes | None:
         print(f'File download error: {e}')
         return None
 
+# Gemini يُستخدم فقط للأسلحة والمخدرات والدماء والهويات
+# (لا نطلب منه المحتوى الجنسي لأنه يرفض تحليله)
 GEMINI_PROMPT = """افحص هذه الصورة بدقة وأجب بـ JSON فقط بدون أي نص إضافي.
-ابحث عن:
-1. محتوى جنسي أو إباحي أو عري أو ملابس مثيرة (بكيني/ملابس داخلية/ديكولتيه)
-2. أسلحة نارية أو سكاكين أو أسلحة حادة
-3. مواد مخدرة أو حبوب مشبوهة أو معدات تعاطي
-4. دماء أو عنف أو محتوى مروّع
-5. وثائق هوية رسمية: جواز سفر، هوية وطنية، رخصة قيادة، بطاقة شخصية
+ابحث فقط عن:
+1. أسلحة نارية أو سكاكين أو مسدسات أو بنادق أو أسلحة حادة
+2. مواد مخدرة: حشيش، كوكايين، حبوب مخدرة، أدوات تعاطي (سيرنجة، أنابيب تدخين)
+3. دماء بكميات كبيرة أو جثث أو محتوى عنيف صريح
+4. وثائق هوية رسمية: جواز سفر، بطاقة هوية وطنية، رخصة قيادة
 
-أجب بهذا الشكل الحرفي:
-{"violation": true/false, "type": "نوع المخالفة أو null"}
+أجب بهذا الشكل الحرفي فقط:
+{"violation": true, "type": "نوع المخالفة"}
+أو
+{"violation": false, "type": null}
 
-أنواع المخالفة الممكنة: "إباحي" أو "أسلحة" أو "مواد ممنوعة" أو "محتوى عنيف (دماء)" أو "وثيقة حكومية (هوية/جواز)"
-إذا لا توجد مخالفة: {"violation": false, "type": null}"""
+الأنواع المقبولة فقط: "أسلحة" أو "مواد ممنوعة" أو "محتوى عنيف (دماء)" أو "وثيقة حكومية (هوية/جواز)" """
 
 async def check_image_nsfw(file_id):
-    if not GEMINI_API_KEYS:
-        return False, None
     try:
         img_bytes = await _download_file_bytes(file_id)
         if not img_bytes:
             return False, None
+
+        # الخطوة 1: NudeNet — يكشف المحتوى الجنسي/الإباحي محلياً
+        is_nude = await _check_nudity_nudenet(img_bytes)
+        if is_nude:
+            return True, 'إباحي'
+
+        # الخطوة 2: Gemini — يكشف الأسلحة والمخدرات والدماء والهويات
+        if not GEMINI_API_KEYS:
+            return False, None
         response = await _call_gemini_vision(img_bytes, GEMINI_PROMPT)
         if not response:
             return False, None
-        # استخراج JSON من الرد
         import re as _re
         match = _re.search(r'\{.*?\}', response, _re.DOTALL)
         if not match:
@@ -863,17 +929,24 @@ async def check_image_nsfw(file_id):
 
 
 async def check_video_nsfw(file_id):
-    # للفيديو: نحمّل الفيديو ونرسله لـ Gemini كـ video/mp4
-    # الحد: 20 ميغابايت (حد تيليغرام للتحميل)، نأخذ أول 15MB فقط
-    if not GEMINI_API_KEYS:
-        return False, None
+    # للفيديو: نحاول نستخرج أول فريم ونفحصه بـ NudeNet
+    # ثم نرسل للـ Gemini للكشف عن الأسلحة والمخدرات والدماء
     try:
         vid_bytes = await _download_file_bytes(file_id)
         if not vid_bytes:
             return False, None
-        # نأخذ أول 15 ميغابايت فقط لضمان سرعة المعالجة
-        vid_bytes = vid_bytes[:15 * 1024 * 1024]
-        response = await _call_gemini_vision(vid_bytes, GEMINI_PROMPT, mime_type='video/mp4')
+
+        # الخطوة 1: NudeNet — نحاول نفحص الفيديو كصورة (أول فريم)
+        # نحفظه كملف مؤقت ونستخدم OpenCV لاستخراج أول فريم
+        is_nude = await _check_nudity_nudenet_video(vid_bytes)
+        if is_nude:
+            return True, 'إباحي'
+
+        # الخطوة 2: Gemini — للأسلحة والمخدرات والدماء والهويات
+        if not GEMINI_API_KEYS:
+            return False, None
+        vid_bytes_trimmed = vid_bytes[:15 * 1024 * 1024]
+        response = await _call_gemini_vision(vid_bytes_trimmed, GEMINI_PROMPT, mime_type='video/mp4')
         if not response:
             return False, None
         import re as _re
@@ -887,6 +960,53 @@ async def check_video_nsfw(file_id):
     except Exception as e:
         print(f'Video NSFW check error: {e}')
         return False, None
+
+
+async def _check_nudity_nudenet_video(vid_bytes: bytes) -> bool:
+    """يستخرج أول فريم من الفيديو ويفحصه بـ NudeNet"""
+    import asyncio, tempfile, os
+    detector = _get_nude_detector()
+    if not detector:
+        return False
+    loop = asyncio.get_event_loop()
+    def _detect():
+        tmp_vid = None
+        tmp_frame = None
+        try:
+            # حفظ الفيديو مؤقتاً
+            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
+                f.write(vid_bytes)
+                tmp_vid = f.name
+            # استخراج أول فريم بـ OpenCV
+            try:
+                import cv2
+                cap = cv2.VideoCapture(tmp_vid)
+                ret, frame = cap.read()
+                cap.release()
+                if not ret or frame is None:
+                    return False
+                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as f:
+                    tmp_frame = f.name
+                cv2.imwrite(tmp_frame, frame)
+            except ImportError:
+                # OpenCV غير مثبت — نتخطى فحص الفيديو بـ NudeNet
+                return False
+            detections = detector.detect(tmp_frame)
+            for det in detections:
+                if det.get('class', '') in NUDE_EXPLICIT_LABELS and det.get('score', 0) > 0.45:
+                    return True
+            return False
+        except Exception as e:
+            print(f'NudeNet video detect error: {e}')
+            return False
+        finally:
+            for p in [tmp_vid, tmp_frame]:
+                if p:
+                    try:
+                        os.unlink(p)
+                    except:
+                        pass
+    return await loop.run_in_executor(None, _detect)
 
 # ===========================
 # YOUTUBE SEARCH & DOWNLOAD
