@@ -18,8 +18,55 @@ STATE_FILE = './state.json'
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '').rstrip('/')
 
-SIGHTENGINE_API_USER = '130043340'
-SIGHTENGINE_API_SECRET = 'RFozDT5M3VYmccC2rcArKqnMPWPCKJfE'
+# ===== قائمة حسابات Sightengine للتناوب =====
+# أضف حسابات أكثر هنا لزيادة عدد الطلبات المتاحة
+# كل حساب مجاني = 2000 طلب شهرياً
+SIGHTENGINE_ACCOUNTS = [
+    {'api_user': '130043340',  'api_secret': 'RFozDT5M3VYmccC2rcArKqnMPWPCKJfE'},
+    {'api_user': '801873434',  'api_secret': '9yZPqVt5RZ8fGoQQNuVNLekFtyX3bLLG'},
+    {'api_user': '1558579571', 'api_secret': 'DggnM54xQ5xDF5DEJKPXjB4PU8PHHgog'},
+    {'api_user': '1016150176', 'api_secret': 'D9mu5JjJJMCzsyzQX7s5HSttWrJeZBUU'},
+    {'api_user': '1774242580', 'api_secret': 'qCyR3n130043340XKMF72rNj4qJt9tmftnkXmsi9p'},
+    {'api_user': '5428327',    'api_secret': 'Wvd7XTKKDviNW9hYcTAx9bhoqsR4Zweu'},
+    {'api_user': '703960344',  'api_secret': '8RVyyAHhdSf7VBqJzFB3df9G6fkHZrGR'},
+    {'api_user': '95097730',   'api_secret': 'zNTQNKgzEoWr4bMKpNrXS6FRriHMHnHp'},
+]
+
+# مؤشر الحساب الحالي
+_sightengine_index = 0
+# عداد الطلبات لكل حساب: {index: count}
+_sightengine_counts = {}
+# الحسابات المحظورة (وصلت للحد): {index: timestamp}
+_sightengine_blocked = {}
+
+def _get_active_sightengine():
+    """يرجع بيانات الحساب النشط، وينتقل للتالي إذا كان محظوراً"""
+    global _sightengine_index
+    now = time.time()
+    # تحرير الحسابات المحظورة بعد 24 ساعة
+    for idx in list(_sightengine_blocked.keys()):
+        if now - _sightengine_blocked[idx] > 86400:
+            del _sightengine_blocked[idx]
+            print(f'✅ تم تحرير حساب Sightengine #{idx}')
+    total = len(SIGHTENGINE_ACCOUNTS)
+    for _ in range(total):
+        idx = _sightengine_index % total
+        if idx not in _sightengine_blocked:
+            return idx, SIGHTENGINE_ACCOUNTS[idx]
+        _sightengine_index += 1
+    # كل الحسابات محظورة
+    return None, None
+
+def _block_sightengine(idx):
+    """يحظر حساباً وينتقل للتالي"""
+    global _sightengine_index
+    _sightengine_blocked[idx] = time.time()
+    _sightengine_index = (idx + 1) % len(SIGHTENGINE_ACCOUNTS)
+    print(f'⚠️ حساب Sightengine #{idx} وصل للحد، تم الانتقال للحساب التالي')
+
+# للتوافق مع الكود القديم
+SIGHTENGINE_API_USER = SIGHTENGINE_ACCOUNTS[0]['api_user']
+SIGHTENGINE_API_SECRET = SIGHTENGINE_ACCOUNTS[0]['api_secret']
 
 DEVELOPER_USERNAME = 'c9aac'
 
@@ -749,7 +796,8 @@ async def is_developer(user_id, username=None):
 # ===========================
 
 async def check_image_nsfw(file_id):
-    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
+    idx, account = _get_active_sightengine()
+    if account is None:
         return False, None
     try:
         file_info = await get_file(file_id)
@@ -763,13 +811,27 @@ async def check_image_nsfw(file_id):
         params = {
             'url': file_url,
             'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content',
-            'api_user': SIGHTENGINE_API_USER,
-            'api_secret': SIGHTENGINE_API_SECRET
+            'api_user': account['api_user'],
+            'api_secret': account['api_secret']
         }
         async with session.get('https://api.sightengine.com/1.0/check.json', params=params) as res:
+            if res.status == 400:
+                # محاولة قراءة سبب الخطأ
+                try:
+                    err = await res.json()
+                    err_code = err.get('error', {}).get('code', 0)
+                    # كود 45 = تجاوز الحد المسموح
+                    if err_code == 45 or 'limit' in str(err).lower():
+                        _block_sightengine(idx)
+                        # محاولة بالحساب التالي
+                        return await check_image_nsfw(file_id)
+                except:
+                    pass
+                return False, None
             if res.status != 200:
                 return False, None
             result = await res.json()
+            _sightengine_counts[idx] = _sightengine_counts.get(idx, 0) + 1
             if result.get('status') != 'success':
                 return False, None
             nudity = result.get('nudity', {})
@@ -849,7 +911,8 @@ async def check_image_nsfw(file_id):
 
 
 async def check_video_nsfw(file_id):
-    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
+    idx, account = _get_active_sightengine()
+    if account is None:
         return False, None
     try:
         file_info = await get_file(file_id)
@@ -864,13 +927,24 @@ async def check_video_nsfw(file_id):
             'url': file_url,
             'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0',
             'interval': '0.5',
-            'api_user': SIGHTENGINE_API_USER,
-            'api_secret': SIGHTENGINE_API_SECRET
+            'api_user': account['api_user'],
+            'api_secret': account['api_secret']
         }
         async with session.get('https://api.sightengine.com/1.0/video/check-sync.json', params=params) as res:
+            if res.status == 400:
+                try:
+                    err = await res.json()
+                    err_code = err.get('error', {}).get('code', 0)
+                    if err_code == 45 or 'limit' in str(err).lower():
+                        _block_sightengine(idx)
+                        return await check_video_nsfw(file_id)
+                except:
+                    pass
+                return False, None
             if res.status != 200:
                 return False, None
             result = await res.json()
+            _sightengine_counts[idx] = _sightengine_counts.get(idx, 0) + 1
             if result.get('status') != 'success':
                 return False, None
             frames = result.get('data', {}).get('frames', [])
