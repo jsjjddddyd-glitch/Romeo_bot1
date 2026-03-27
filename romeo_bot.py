@@ -815,25 +815,18 @@ async def check_image_nsfw(file_id):
             'api_secret': account['api_secret']
         }
         async with session.get('https://api.sightengine.com/1.0/check.json', params=params) as res:
-            if res.status == 400:
-                # محاولة قراءة سبب الخطأ
-                try:
-                    err = await res.json()
-                    err_code = err.get('error', {}).get('code', 0)
-                    # كود 45 = تجاوز الحد المسموح
-                    if err_code == 45 or 'limit' in str(err).lower():
-                        _block_sightengine(idx)
-                        # محاولة بالحساب التالي
-                        return await check_image_nsfw(file_id)
-                except:
-                    pass
-                return False, None
-            if res.status != 200:
+            if res.status not in (200, 400):
                 return False, None
             result = await res.json()
-            _sightengine_counts[idx] = _sightengine_counts.get(idx, 0) + 1
+            # كشف تجاوز الحد (Sightengine يرجع 200 مع status=failure)
             if result.get('status') != 'success':
+                err_code = result.get('error', {}).get('code', 0)
+                err_msg = str(result.get('error', {}).get('message', '')).lower()
+                if err_code in (45, 40) or 'limit' in err_msg or 'quota' in err_msg or 'exceeded' in err_msg:
+                    _block_sightengine(idx)
+                    return await check_image_nsfw(file_id)
                 return False, None
+            _sightengine_counts[idx] = _sightengine_counts.get(idx, 0) + 1
             nudity = result.get('nudity', {})
             suggestive_classes = nudity.get('suggestive_classes', {})
             if (
@@ -931,22 +924,17 @@ async def check_video_nsfw(file_id):
             'api_secret': account['api_secret']
         }
         async with session.get('https://api.sightengine.com/1.0/video/check-sync.json', params=params) as res:
-            if res.status == 400:
-                try:
-                    err = await res.json()
-                    err_code = err.get('error', {}).get('code', 0)
-                    if err_code == 45 or 'limit' in str(err).lower():
-                        _block_sightengine(idx)
-                        return await check_video_nsfw(file_id)
-                except:
-                    pass
-                return False, None
-            if res.status != 200:
+            if res.status not in (200, 400):
                 return False, None
             result = await res.json()
-            _sightengine_counts[idx] = _sightengine_counts.get(idx, 0) + 1
             if result.get('status') != 'success':
+                err_code = result.get('error', {}).get('code', 0)
+                err_msg = str(result.get('error', {}).get('message', '')).lower()
+                if err_code in (45, 40) or 'limit' in err_msg or 'quota' in err_msg or 'exceeded' in err_msg:
+                    _block_sightengine(idx)
+                    return await check_video_nsfw(file_id)
                 return False, None
+            _sightengine_counts[idx] = _sightengine_counts.get(idx, 0) + 1
             frames = result.get('data', {}).get('frames', [])
             for frame in frames:
                 nudity = frame.get('nudity', {})
