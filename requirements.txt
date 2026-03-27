@@ -1,2 +1,5 @@
 aiohttp
 psycopg2-binary
+opencv-python-headless
+nudenet
+ultralytics
