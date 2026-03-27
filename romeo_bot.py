@@ -18,6 +18,8 @@ STATE_FILE = './state.json'
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '').rstrip('/')
 
+SIGHTENGINE_API_USER = '130043340'
+SIGHTENGINE_API_SECRET = 'RFozDT5M3VYmccC2rcArKqnMPWPCKJfE'
 
 DEVELOPER_USERNAME = 'c9aac'
 
@@ -743,154 +745,168 @@ async def is_developer(user_id, username=None):
     return False
 
 # ===========================
-# NSFW IMAGE DETECTION (NudeNet + YOLOv8 - بدون API)
+# NSFW IMAGE DETECTION
 # ===========================
 
-import tempfile
-import cv2 as _cv2
-from nudenet import NudeDetector as _NudeDetector
-from ultralytics import YOLO as _YOLO
-
-# تهيئة النماذج مرة واحدة عند بدء التشغيل
-_nude_detector = None
-_weapon_model = None
-
-# فئات الإباحي الصريحة - عتبة حساسة جداً (0.2)
-NUDE_EXPLICIT_CLASSES = {
-    'EXPOSED_BREAST_F', 'EXPOSED_GENITALIA_F', 'EXPOSED_GENITALIA_M',
-    'EXPOSED_BUTTOCKS', 'EXPOSED_ANUS',
-}
-# فئات مثيرة - عتبة متوسطة (0.45)
-NUDE_SUGGESTIVE_CLASSES = {
-    'COVERED_GENITALIA_F', 'COVERED_GENITALIA_M', 'COVERED_BUTTOCKS',
-    'EXPOSED_BELLY', 'COVERED_BELLY',
-}
-# أسماء الأسلحة المدعومة في YOLOv8
-WEAPON_CLASS_NAMES = {'knife', 'gun', 'pistol', 'rifle', 'firearm', 'weapon', 'handgun', 'sword'}
-
-def get_nude_detector():
-    global _nude_detector
-    if _nude_detector is None:
-        _nude_detector = _NudeDetector()
-    return _nude_detector
-
-def get_weapon_model():
-    global _weapon_model
-    if _weapon_model is None:
-        _weapon_model = _YOLO('yolov8n.pt')
-    return _weapon_model
-
-async def _download_file(file_id):
-    file_info = await get_file(file_id)
-    if not file_info:
-        return None
-    file_path = file_info.get('file_path')
-    if not file_path:
-        return None
-    file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
-    session = await get_session()
-    try:
-        async with session.get(file_url) as resp:
-            if resp.status == 200:
-                return await resp.read()
-    except Exception as e:
-        print(f'Download error: {e}')
-    return None
-
-def _check_frame(path):
-    """فحص إطار واحد بـ NudeNet وYOLOv8، يرجع (is_violation, type)"""
-    try:
-        detector = get_nude_detector()
-        detections = detector.detect(path)
-        for det in detections:
-            label = det.get('class', '')
-            score = det.get('score', 0)
-            if label in NUDE_EXPLICIT_CLASSES and score > 0.2:
-                return True, 'إباحي'
-            if label in NUDE_SUGGESTIVE_CLASSES and score > 0.45:
-                return True, 'إباحي'
-    except Exception as e:
-        print(f'NudeNet error: {e}')
-    try:
-        model = get_weapon_model()
-        results = model(path, verbose=False, conf=0.25)
-        for r in results:
-            for box in r.boxes:
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                cls_name = model.names.get(cls_id, '').lower()
-                if cls_name in WEAPON_CLASS_NAMES and conf > 0.25:
-                    return True, 'أسلحة'
-    except Exception as e:
-        print(f'YOLOv8 error: {e}')
-    return False, None
-
 async def check_image_nsfw(file_id):
-    import os as _os_img
+    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
+        return False, None
     try:
-        data = await _download_file(file_id)
-        if not data:
+        file_info = await get_file(file_id)
+        if not file_info:
             return False, None
-        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
-        try:
-            return _check_frame(tmp_path)
-        finally:
-            try:
-                _os_img.unlink(tmp_path)
-            except:
-                pass
+        file_path = file_info.get('file_path')
+        if not file_path:
+            return False, None
+        file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
+        session = await get_session()
+        params = {
+            'url': file_url,
+            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0,text-content',
+            'api_user': SIGHTENGINE_API_USER,
+            'api_secret': SIGHTENGINE_API_SECRET
+        }
+        async with session.get('https://api.sightengine.com/1.0/check.json', params=params) as res:
+            if res.status != 200:
+                return False, None
+            result = await res.json()
+            if result.get('status') != 'success':
+                return False, None
+            nudity = result.get('nudity', {})
+            suggestive_classes = nudity.get('suggestive_classes', {})
+            if (
+                nudity.get('sexual_activity', 0) > 0.05
+                or nudity.get('sexual_display', 0) > 0.05
+                or nudity.get('erotica', 0) > 0.07
+                or nudity.get('very_suggestive', 0) > 0.1
+                or nudity.get('suggestive', 0) > 0.15
+                or suggestive_classes.get('suggestive_focus_body_part', 0) > 0.1
+                or suggestive_classes.get('lingerie', 0) > 0.1
+                or suggestive_classes.get('cleavage', 0) > 0.15
+                or suggestive_classes.get('bikini', 0) > 0.15
+                or suggestive_classes.get('miniskirt', 0) > 0.2
+            ):
+                return True, 'إباحي'
+            weapon = result.get('weapon', {})
+            weapon_classes = weapon.get('classes', {})
+            if (
+                weapon_classes.get('firearm', 0) > 0.3
+                or weapon_classes.get('knife', 0) > 0.3
+                or weapon_classes.get('gun', 0) > 0.3
+            ):
+                return True, 'أسلحة'
+            drug = result.get('recreational_drug', {})
+            drug_prob = drug.get('prob', 0)
+            drug_classes = drug.get('classes', {})
+            if drug_prob > 0.04 or any(v > 0.04 for v in drug_classes.values()):
+                return True, 'مواد ممنوعة'
+            gore = result.get('gore', {})
+            if gore.get('prob', 0) > 0.04:
+                return True, 'محتوى عنيف (دماء)'
+            # رصد الهويات عبر تحليل النص المكتشف في الصورة
+            text_content = result.get('text', {})
+            if isinstance(text_content, dict):
+                detected_items = text_content.get('detected', [])
+                detected_text = ' '.join([
+                    t.get('content', '') for t in detected_items
+                ]).lower()
+                # كلمات قاطعة تكفي وحدها للكشف (كلمة واحدة = هوية)
+                strong_id_keywords = [
+                    'passport', 'passeport', 'reisepass', 'passaporto', 'pasaporte',
+                    'national id', 'national identity', 'nationalausweis',
+                    'driver license', "driver's license", 'driving licence',
+                    'identity card', 'carte nationale', 'carte d\'identite',
+                    'personalausweis', 'bundesrepublik', 'republique francaise',
+                    'cedula de identidad', 'cedula ciudadania',
+                    'رقم الهوية', 'هوية وطنية', 'بطاقة هوية',
+                    'جواز السفر', 'رخصة القيادة', 'بطاقة شخصية',
+                    'الرقم القومي', 'رقم جواز', 'وثيقة سفر',
+                    'kingdom of saudi', 'المملكة العربية', 'الجمهورية العربية',
+                    'جمهورية العراق', 'جمهورية مصر', 'دولة الإمارات',
+                    'جمهورية تونس', 'المملكة المغربية', 'الجمهورية الجزائرية',
+                ]
+                for kw in strong_id_keywords:
+                    if kw in detected_text:
+                        return True, 'وثيقة حكومية (هوية/جواز)'
+                # كلمات تراكمية - يكفي وجود 2 منها
+                soft_id_keywords = [
+                    'republic', 'nationality', 'date of birth', 'expiry', 'expires',
+                    'surname', 'given name', 'given names', 'personal number',
+                    'place of birth', 'identification', 'mrz', 'citizen',
+                    'document no', 'doc no', 'document number', 'sex / sexe',
+                    'dowod', 'osobisty', 'ausweis', 'republique', 'dni',
+                    'الجنسية', 'تاريخ الميلاد', 'تاريخ الانتهاء', 'تاريخ الإصدار',
+                    'مكان الميلاد', 'نمرة الوثيقة', 'رقم الوثيقة',
+                    'الاسم الأول', 'اسم الأب', 'الاسم الكامل',
+                ]
+                soft_count = sum(1 for kw in soft_id_keywords if kw in detected_text)
+                if soft_count >= 2:
+                    return True, 'وثيقة حكومية (هوية/جواز)'
+            return False, None
     except Exception as e:
         print(f'NSFW check error: {e}')
         return False, None
 
 
 async def check_video_nsfw(file_id):
-    import os as _os_vid
+    if not SIGHTENGINE_API_USER or not SIGHTENGINE_API_SECRET:
+        return False, None
     try:
-        data = await _download_file(file_id)
-        if not data:
+        file_info = await get_file(file_id)
+        if not file_info:
             return False, None
-        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
-        try:
-            cap = _cv2.VideoCapture(tmp_path)
-            fps = cap.get(_cv2.CAP_PROP_FPS) or 25
-            frame_interval = max(1, int(fps * 0.5))
-            frame_count = 0
-            checked = 0
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frame_count += 1
-                if frame_count % frame_interval != 0:
-                    continue
-                checked += 1
-                if checked > 20:
-                    break
-                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as ftmp:
-                    _cv2.imwrite(ftmp.name, frame)
-                    frame_path = ftmp.name
-                try:
-                    is_v, v_type = _check_frame(frame_path)
-                    if is_v:
-                        cap.release()
-                        return True, v_type
-                finally:
-                    try:
-                        _os_vid.unlink(frame_path)
-                    except:
-                        pass
-            cap.release()
+        file_path = file_info.get('file_path')
+        if not file_path:
             return False, None
-        finally:
-            try:
-                _os_vid.unlink(tmp_path)
-            except:
-                pass
+        file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
+        session = await get_session()
+        params = {
+            'url': file_url,
+            'models': 'nudity-2.1,weapon,recreational_drug,gore-2.0',
+            'interval': '0.5',
+            'api_user': SIGHTENGINE_API_USER,
+            'api_secret': SIGHTENGINE_API_SECRET
+        }
+        async with session.get('https://api.sightengine.com/1.0/video/check-sync.json', params=params) as res:
+            if res.status != 200:
+                return False, None
+            result = await res.json()
+            if result.get('status') != 'success':
+                return False, None
+            frames = result.get('data', {}).get('frames', [])
+            for frame in frames:
+                nudity = frame.get('nudity', {})
+                suggestive_classes = nudity.get('suggestive_classes', {})
+                if (
+                    nudity.get('sexual_activity', 0) > 0.05
+                    or nudity.get('sexual_display', 0) > 0.05
+                    or nudity.get('erotica', 0) > 0.07
+                    or nudity.get('very_suggestive', 0) > 0.1
+                    or nudity.get('suggestive', 0) > 0.15
+                    or suggestive_classes.get('suggestive_focus_body_part', 0) > 0.1
+                    or suggestive_classes.get('lingerie', 0) > 0.1
+                    or suggestive_classes.get('cleavage', 0) > 0.15
+                    or suggestive_classes.get('bikini', 0) > 0.15
+                    or suggestive_classes.get('miniskirt', 0) > 0.2
+                ):
+                    return True, 'إباحي'
+                weapon = frame.get('weapon', {})
+                weapon_classes = weapon.get('classes', {})
+                if (
+                    weapon_classes.get('firearm', 0) > 0.3
+                    or weapon_classes.get('knife', 0) > 0.3
+                    or weapon_classes.get('gun', 0) > 0.3
+                ):
+                    return True, 'أسلحة'
+                drug = frame.get('recreational_drug', {})
+                drug_prob = drug.get('prob', 0)
+                drug_classes = drug.get('classes', {})
+                if drug_prob > 0.04 or any(v > 0.04 for v in drug_classes.values()):
+                    return True, 'مواد ممنوعة'
+                gore = frame.get('gore', {})
+                if gore.get('prob', 0) > 0.04:
+                    return True, 'محتوى عنيف (دماء)'
+            return False, None
     except Exception as e:
         print(f'Video NSFW check error: {e}')
         return False, None
