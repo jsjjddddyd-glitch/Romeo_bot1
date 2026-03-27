@@ -1,2 +1,4 @@
 aiohttp
 psycopg2-binary
+nudenet
+opencv-python
